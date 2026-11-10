@@ -188,12 +188,13 @@ function ServerForm({ kind, server, run, error, preview, changeOverlay }: { kind
   return <form onSubmit={event => void submit(event)}>
     <header className="modal-heading"><h2 id="dialog-title">{title}</h2><IconButton label="关闭对话框" onClick={() => changeOverlay(null)} disabled={pending}><X /></IconButton></header>
     <p className="modal-description">{kind === 'login' ? `为 ${server?.name} 完成登录，Cookie 将保存在此连接的独立网页环境中。` : '保存 DSH 网页地址，随时从左下角切换。'}</p>
+    {kind === 'login' && server && <p className="field-help">登录目标：<code className="server-address">{server.url}</code></p>}
     {kind !== 'login' && <label className="field">连接名称<input autoComplete="off" aria-label="连接名称" value={name} onChange={event => setName(event.target.value)} placeholder="例如：我的开发工作站" maxLength={80} required disabled={pending} /></label>}
     <label className="field">{kind === 'login' ? 'DSH 启动链接' : 'DSH Web 地址'}<input aria-label={kind === 'login' ? 'DSH 启动链接' : 'DSH Web 地址'} type={kind === 'login' ? 'password' : 'url'} autoComplete="off" spellCheck={false} value={url} onChange={event => setUrl(event.target.value)} placeholder={kind === 'login' ? '粘贴 DSH 启动时显示的完整链接' : 'https://dsh.example.com/'} maxLength={8192} required disabled={pending} /></label>
-    <p className="field-help">{preview ? '浏览器预览不会连接服务器，请勿输入真实登录凭据。' : kind === 'login' ? '链接只用于本次登录，不会保存到连接配置。' : '支持 HTTP / HTTPS 和带路径前缀的地址。启动链接中的 token 仅用于登录，不保存到配置。'}</p>
+    <p className="field-help">{preview ? '浏览器预览不会连接服务器，请勿输入真实登录凭据。' : kind === 'login' ? '先验证 token 与登录 Cookie，再打开网页。链接不会保存到连接配置。' : '支持 HTTP / HTTPS 和带路径前缀的地址。启动链接中的 token 仅用于登录，不保存到配置。'}</p>
     <div className="form-error" role="alert">{error}</div>
     {kind === 'edit' && server && <div className="edit-tools"><button type="button" className="plain-button" disabled={pending} onClick={() => changeOverlay({ kind: 'login', id: server.id })}><KeyRound />重新登录</button><button type="button" className="plain-button danger" disabled={pending} onClick={() => changeOverlay({ kind: 'remove', id: server.id })}><Trash2 />移除连接</button></div>}
-    <footer className="modal-actions"><button type="button" className="secondary" disabled={pending} onClick={() => changeOverlay({ kind: 'instances' })}>取消</button><button className="primary" disabled={pending || kind !== 'login' && !name.trim()} type="submit">{pending && <LoaderCircle className="spin" />}{kind === 'login' ? '登录并打开' : kind === 'edit' ? '保存并打开' : '添加并打开'}</button></footer>
+    <footer className="modal-actions"><button type="button" className="secondary" disabled={pending} onClick={() => changeOverlay({ kind: 'instances' })}>取消</button><button className="primary" disabled={pending || kind !== 'login' && !name.trim()} type="submit">{pending && <LoaderCircle className="spin" />}{pending && kind === 'login' ? '正在验证登录…' : kind === 'login' ? '登录并打开' : kind === 'edit' ? '保存并打开' : '添加并打开'}</button></footer>
   </form>
 }
 

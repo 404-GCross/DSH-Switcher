@@ -6,6 +6,8 @@ import { z } from 'zod'
 import type { AppState, Command, CommandResult, ConnectionStatus, Overlay, Server } from '../shared/types'
 import { SettingsStore } from './settings'
 import { isWebUrl, isWithinServer, loginUrlFor, parseServerUrl } from './server-url'
+import { authenticateSession } from './authenticate'
+import { readAuthenticationHeaders } from './auth-transport'
 
 const FOOTER_HEIGHT = 44
 const overlaySchema = z.union([
@@ -200,6 +202,10 @@ class Switcher {
         // A changed endpoint gets a fresh persistent cookie partition.
         const id = old && old.url === parsed.baseUrl ? old.id : randomUUID()
         const record: Server = { id, name: command.name.trim(), url: parsed.baseUrl }
+        if (parsed.launchUrl !== parsed.baseUrl) {
+          const ses = this.configureSession(record)
+          await authenticateSession(record.url, parsed.launchUrl, (url, options) => readAuthenticationHeaders(ses, url, options))
+        }
         await this.store.update(settings => {
           if (!old && settings.servers.length >= 100) throw new Error('最多保存 100 个服务器连接')
           return {
@@ -213,7 +219,7 @@ class Switcher {
         if (runtime) runtime.server = record
         this.activeId = id
         this.overlay = null
-        if (!runtime || parsed.launchUrl !== parsed.baseUrl || runtime.status !== 'ready') this.open(record, parsed.launchUrl)
+        if (!runtime || parsed.launchUrl !== parsed.baseUrl || runtime.status !== 'ready') this.open(record)
         break
       }
       case 'default':
@@ -237,9 +243,11 @@ class Switcher {
       case 'login': {
         const server = this.requireServer(command.id)
         const url = loginUrlFor(server.url, command.url)
+        const ses = this.configureSession(server)
+        await authenticateSession(server.url, url, (request, options) => readAuthenticationHeaders(ses, request, options))
         this.activeId = server.id
         this.overlay = null
-        this.open(server, url)
+        this.open(server)
         break
       }
       case 'reload':
@@ -290,7 +298,7 @@ class Switcher {
     return ses
   }
 
-  private open(server: Server, launchUrl = server.url): void {
+  private open(server: Server): void {
     let runtime = this.runtimes.get(server.id)
     if (!runtime) {
       const view = new WebContentsView({ webPreferences: {
@@ -339,8 +347,8 @@ class Switcher {
     runtime.status = 'loading'
     runtime.error = undefined
     runtime.responseCode = 0
-    // Electron reports details through did-fail-load. Avoid logging launch URLs containing credentials.
-    void runtime.view.webContents.loadURL(launchUrl).catch(() => undefined)
+    // Login is completed in this view's session before navigating to a credential-free URL.
+    void runtime.view.webContents.loadURL(server.url).catch(() => undefined)
     this.publish()
   }
 

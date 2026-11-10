@@ -10,18 +10,20 @@ const artifactDir = path.resolve('test-results')
 await mkdir(artifactDir, { recursive: true })
 const directory = await mkdtemp(path.join(process.env.SWITCHER_TEST_TMP ?? os.tmpdir(), 'switcher-desktop-'))
 const servers = []
+const bindHost = process.env.SWITCHER_TEST_HOST ?? '127.0.0.1'
 let client
 
-async function host(name) {
+async function host(name, { rejectCookie = false } = {}) {
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost')
     response.setHeader('Content-Security-Policy', "frame-ancestors 'none'")
+    response.setHeader('cache-control', 'no-store')
     if (url.searchParams.get('token') === name) {
       response.writeHead(303, { 'set-cookie': `owner=${name}; Path=/; HttpOnly; SameSite=Strict; Max-Age=3600`, location: './' })
       response.end()
       return
     }
-    if (request.headers.cookie !== `owner=${name}`) {
+    if (rejectCookie || request.headers.cookie !== `owner=${name}`) {
       response.writeHead(401, { 'content-type': 'text/html' })
       response.end('<h1>Authentication required</h1>')
       return
@@ -29,10 +31,10 @@ async function host(name) {
     response.setHeader('content-type', 'text/html')
     response.end(`<!doctype html><html><body style="font-family:system-ui;padding:40px;background:#fafbfc"><h1>${name} native server page</h1><p>This page refuses iframe embedding.</p><input id="draft" aria-label="Native draft" placeholder="Persistent draft"><input id="file" type="file"><div id="plugin">Native plugin content</div></body></html>`)
   })
-  server.listen(0, '127.0.0.1')
+  server.listen(0, bindHost)
   await once(server, 'listening')
   servers.push(server)
-  return `http://127.0.0.1:${server.address().port}/`
+  return `http://${bindHost}:${server.address().port}/`
 }
 
 async function launch() {
@@ -88,7 +90,15 @@ try {
   await command(page, { type: 'save', name: 'Beta', url: b })
   await waitStatus(page, 'auth-required')
   const betaId = (await state(page)).activeId
-  await command(page, { type: 'login', id: betaId, url: `${b}?token=beta` })
+  await page.getByRole('button', { name: '输入登录链接' }).click()
+  const loginPage = client.windows().find(item => item.url().includes('surface=overlay'))
+  await loginPage.getByLabel('DSH 启动链接').fill(`${b}?token=incorrect`)
+  await loginPage.getByRole('button', { name: '登录并打开' }).click()
+  await expect(loginPage.getByRole('alert')).toContainText('服务器拒绝了此 token（HTTP 401）')
+  await loginPage.screenshot({ path: path.join(artifactDir, 'desktop-login-error.png'), omitBackground: true })
+  assert.equal((await state(page)).servers.find(server => server.id === betaId).status, 'auth-required')
+  await loginPage.getByLabel('DSH 启动链接').fill(`${b}?token=beta`)
+  await loginPage.getByRole('button', { name: '登录并打开' }).click()
   await waitStatus(page, 'ready')
   const cookies = await client.evaluate(async ({ session }, ids) => Promise.all(ids.map(id => session.fromPartition(`persist:dsh-${id}`).cookies.get({ name: 'owner' }))), [alphaId, betaId])
   assert.deepEqual(cookies.map(items => items.map(item => item.value)), [['alpha'], ['beta']])
@@ -111,6 +121,13 @@ try {
   await command(page, { type: 'default', id: betaId })
   const config = await readFile(path.join(directory, 'settings.json'), 'utf8')
   assert.equal(config.includes('token='), false)
+
+  // A successful exchange alone must not report login success if the cookie is refused.
+  const broken = await host('broken', { rejectCookie: true })
+  const rejected = await page.evaluate(url => window.desktop.command({ type: 'save', name: 'Broken cookie', url }), `${broken}?token=broken`)
+  assert.equal(rejected.ok, false)
+  assert.match(rejected.error, /Cookie 验证仍为 HTTP 401/)
+  assert.equal((await state(page)).servers.length, 2)
 
   await client.close()
   client = undefined
