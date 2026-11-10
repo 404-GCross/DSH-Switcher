@@ -8,7 +8,7 @@ if [[ ${#packages[@]} != 1 ]]; then
   exit 1
 fi
 
-dnf install -y "${packages[0]}" desktop-file-utils
+dnf install -y "${packages[0]}" desktop-file-utils util-linux
 test "$(rpm -q --qf '%{NAME}' dsh-switcher)" = dsh-switcher
 test "$(rpm -q --qf '%{ARCH}' dsh-switcher)" = x86_64
 rpm -q --qf '%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n' dsh-switcher
