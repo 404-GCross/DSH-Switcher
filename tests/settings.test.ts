@@ -1,0 +1,47 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtemp, readFile, writeFile, rm, mkdir } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { SettingsStore } from '../src/main/settings'
+
+async function fixture(run: (directory: string) => Promise<void>) {
+  const root = process.env.SWITCHER_TEST_TMP ?? os.tmpdir()
+  const dir = await mkdtemp(path.join(root, 'dsh-switcher-test-'))
+  try { await run(dir) } finally { await rm(dir, { recursive: true, force: true }) }
+}
+
+test('concurrent settings operations do not lose each other and survive restart', () => fixture(async directory => {
+  const filename = path.join(directory, 'settings.json')
+  const store = new SettingsStore(filename)
+  await store.load()
+  const ids = [randomUUID(), randomUUID()]
+  await Promise.all(ids.map((id, index) => store.update(settings => ({ ...settings, servers: [...settings.servers, { id, name: `Server ${index}`, url: `https://server${index}.example/` }] }))))
+  await store.update(settings => ({ ...settings, defaultId: ids[1], theme: 'dark' }))
+  const restarted = new SettingsStore(filename)
+  await restarted.load()
+  assert.deepEqual(restarted.snapshot, store.snapshot)
+  assert.equal(restarted.snapshot.servers.length, 2)
+}))
+
+test('configuration containing credentials or an unknown default is rejected and preserved', () => fixture(async directory => {
+  const filename = path.join(directory, 'settings.json')
+  const source = JSON.stringify({ version: 1, servers: [{ id: randomUUID(), name: 'Server', url: 'https://example.com/?token=secret' }], defaultId: null, theme: 'light' })
+  await writeFile(filename, source)
+  await assert.rejects(new SettingsStore(filename).load())
+  assert.equal(await readFile(filename, 'utf8'), source)
+  const store = new SettingsStore(path.join(directory, 'new.json'))
+  await assert.rejects(store.update(settings => ({ ...settings, defaultId: randomUUID() })))
+}))
+
+test('failed filesystem write leaves the previous in-memory settings usable', () => fixture(async directory => {
+  const filename = path.join(directory, 'blocked.json')
+  const store = new SettingsStore(filename)
+  await mkdir(filename)
+  await assert.rejects(store.update(settings => ({ ...settings, theme: 'dark' })))
+  assert.equal(store.snapshot.theme, 'system')
+  await rm(filename, { recursive: true })
+  await store.update(settings => ({ ...settings, theme: 'light' }))
+  assert.equal(store.snapshot.theme, 'light')
+}))
