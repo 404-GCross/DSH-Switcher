@@ -8,10 +8,10 @@
     "name": "GCross",
     "email": "176783842+404-GCross@users.noreply.github.com"
   },
-  "homepage": "https://github.com/404-GCross/DSH-Switcher-Client",
+  "homepage": "https://github.com/404-GCross/DSH-Switcher",
   "repository": {
     "type": "git",
-    "url": "https://github.com/404-GCross/DSH-Switcher-Client.git"
+    "url": "https://github.com/404-GCross/DSH-Switcher.git"
   },
   "engines": {
     "node": ">=22.12.0"

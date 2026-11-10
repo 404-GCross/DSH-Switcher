@@ -2,7 +2,7 @@
 
 多服务器 DSH 桌面客户端。主体直接打开各服务器的 **DSH 原生网页**，左下角管理和切换连接；服务端无需安装额外插件。
 
-[下载开发版（dev Pre-release）](https://github.com/404-GCross/DSH-Switcher-Client/releases/tag/dev) · [GitHub Actions](https://github.com/404-GCross/DSH-Switcher-Client/actions/workflows/desktop.yml)
+[下载开发版（dev Pre-release）](https://github.com/404-GCross/DSH-Switcher/releases/tag/dev) · [GitHub Actions](https://github.com/404-GCross/DSH-Switcher/actions/workflows/desktop.yml)
 
 ## 下载与 Fedora 安装
 
