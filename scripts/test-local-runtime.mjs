@@ -1,5 +1,5 @@
 import { _electron as electron, expect } from '@playwright/test'
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, realpath, rm } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
@@ -57,7 +57,9 @@ try {
   }
   assert.equal(local.process, 'running')
   assert.equal(local.installation.version, version)
-  assert.ok(local.installation.nodePath.startsWith(path.join(directory, 'local-runtime', 'node')))
+  const nodeRoot = await realpath(path.join(directory, 'local-runtime', 'node'))
+  const installedNode = await realpath(local.installation.nodePath)
+  assert.ok(installedNode.startsWith(`${nodeRoot}${path.sep}`))
   await expect.poll(async () => (await state()).servers.find(item => item.id === localId)?.status, { timeout: 30000 }).toBe('ready')
   const url = (await state()).servers.find(item => item.id === localId).url
   assert.equal(new URL(url).hostname, '127.0.0.1')
