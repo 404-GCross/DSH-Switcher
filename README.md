@@ -41,7 +41,7 @@ Linux 原生支持 X11 / Wayland；CI 验证 Fedora 44 的安装、依赖与卸�
 安装客户端后，首页选择 **使用本机 DSH**，或从左下角实例菜单打开 **本机 DSH → 管理**。点击 **安装官方 DSH 并启动**：
 
 1. 从官方 npm 查询所选版本（`latest` 或精确版本号）的 Node.js 要求。
-2. 优先使用本机兼容且带 npm 的 Node.js；缺少时下载满足要求的官方 Node.js LTS，并核对官方 SHA256 清单。Node.js 和 DSH 均按本机架构安装。
+2. 优先使用本机兼容且带 npm 的 Node.js；缺少时优先下载兼容的官方 Node.js 24 LTS，只有 DSH 要求更高版本时才选择其他兼容 LTS，并核对官方 SHA256 清单。Node.js 和 DSH 均按本机架构安装。
 3. 在用户目录安装官方 `@deepseek-ai/dsh` 和固定版本 pnpm，验证 CLI 后启用。无需 sudo，不修改系统全局 npm 安装。
 4. 使用独立 `DSH_HOME`、`switcher` profile 和系统分配的回环端口启动。只读取本次子进程返回的启动链接，自动认证后打开 DSH 原生网页。
 

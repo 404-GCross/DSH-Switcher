@@ -87,7 +87,7 @@ export async function runProgram(binary: string, args: string[], options: {
     const result = await owner.closed
     if (stopError) throw stopError
     options.signal?.throwIfAborted()
-    if (timedOut) throw new Error(`程序执行超时：${path.basename(binary)}`)
+    if (timedOut) throw Object.assign(new Error(`程序执行超时：${path.basename(binary)}`), { code: 'PROCESS_TIMEOUT' })
     if (result.error || result.code !== 0) throw new Error(`程序执行失败：${path.basename(binary)}${result.code === null ? '（中止或超时）' : `（退出码 ${result.code}）`}`)
     return output.trim()
   } finally {

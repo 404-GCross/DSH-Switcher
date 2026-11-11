@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { platformTarget, nodeFiles, runtimeEnvironment } from '../src/main/local-runtime/platform'
 import { parseReadyLine, redactLog, runProgram, OwnedProcess } from '../src/main/local-runtime/process'
-import { acquireInstallLock } from '../src/main/local-runtime/installer'
+import { acquireInstallLock, selectNodeRelease } from '../src/main/local-runtime/installer'
 
 test('platform mapping chooses official archives and platform-specific npm entrypoints', () => {
   assert.equal(platformTarget('win32', 'x64').archive, 'zip')
@@ -14,6 +14,13 @@ test('platform mapping chooses official archives and platform-specific npm entry
   assert.throws(() => platformTarget('freebsd', 'x64'))
   assert.match(nodeFiles('/runtime', 'win32').node, /node\.exe$/)
   assert.match(nodeFiles('/runtime', 'linux').npm, /npm-cli\.js$/)
+})
+
+test('Node selection keeps the compatible tested LTS major and respects newer DSH requirements', () => {
+  const versions = [{ version: 'v26.13.0', lts: 'Neon' }, { version: 'v24.22.2', lts: 'Krypton' }, { version: 'v24.9.0', lts: 'Krypton' }]
+  assert.equal(selectNodeRelease(versions, '>=24.9.0')?.version, 'v24.22.2')
+  assert.equal(selectNodeRelease(versions, '>=26.0.0')?.version, 'v26.13.0')
+  assert.equal(selectNodeRelease(versions, '>=30.0.0'), undefined)
 })
 
 test('only an explicit DSH ready line can provide local authentication', () => {

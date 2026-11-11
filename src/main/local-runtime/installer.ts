@@ -14,6 +14,15 @@ import { runProgram } from './process'
 
 export type InstallationProgress = (stage: string, percent?: number | null) => void
 
+/** Prefer the qualified Node 24 LTS line; newer compatible LTS releases remain available for future DSH requirements. */
+export function selectNodeRelease(releases: Array<{ version: string; lts: string | false }>, range: string) {
+  const compatible = releases.filter(item => item.lts && semver.valid(item.version) && semver.satisfies(item.version, range))
+  return compatible.sort((a, b) => {
+    const aPreferred = semver.major(a.version) === 24, bPreferred = semver.major(b.version) === 24
+    return aPreferred !== bPreferred ? aPreferred ? -1 : 1 : semver.rcompare(a.version, b.version)
+  })[0]
+}
+
 /** Cross-process installation ownership; a dead owner's lock can be reclaimed. */
 export async function acquireInstallLock(directory: string): Promise<() => Promise<void>> {
   await mkdir(path.dirname(directory), { recursive: true })
@@ -55,7 +64,7 @@ export class RuntimeInstaller {
     }
     const target = platformTarget()
     const releases = z.array(z.object({ version: z.string(), lts: z.union([z.string(), z.literal(false)]) })).parse(await this.downloads.json('https://nodejs.org/dist/index.json', signal))
-    const release = releases.filter(item => item.lts && semver.valid(item.version) && semver.satisfies(item.version, range)).sort((a, b) => semver.rcompare(a.version, b.version))[0]
+    const release = selectNodeRelease(releases, range)
     if (!release) throw new Error(`未找到满足 ${range} 的官方 Node.js LTS 版本`)
     const name = `node-${release.version}-${target.nodePlatform}-${target.arch}`
     const filename = `${name}.${target.archive}`
@@ -103,14 +112,28 @@ export class RuntimeInstaller {
     progress('安装官方 npm 包与平台依赖（首次安装可能需要数分钟）')
     // Raw npm output can include registry credentials. Only fixed progress labels leave this process.
     let failureCode = ''
+    let lifecycle = ''
+    let outputLine = ''
     try {
-      await runProgram(node, [npm, 'install', '--prefix', stage, '--registry', NPM_REGISTRY, '--no-audit', '--no-fund', '--save-exact', ...packages], {
+      await runProgram(node, [npm, 'install', '--prefix', stage, '--registry', NPM_REGISTRY, '--no-audit', '--no-fund', '--loglevel=info', '--save-exact', ...packages], {
         env, cwd: stage, signal, timeoutMs: 15 * 60_000, supervisor: this.supervisor,
-        onOutput: text => { const match = /npm (?:error|ERR!) code ([A-Z][A-Z0-9_]+)/.exec(text); if (match) failureCode = match[1] },
+        onOutput: text => {
+          outputLine += text
+          let end: number
+          while ((end = outputLine.indexOf('\n')) !== -1) {
+            const line = outputLine.slice(0, end); outputLine = outputLine.slice(end + 1)
+            const code = /npm (?:error|ERR!) code ([A-Z0-9_]{1,40})\b/.exec(line)
+            if (code) failureCode = code[1]
+            const phase = /npm info run ((?:@[a-z0-9._-]+\/)?[a-z0-9._-]+@[0-9][0-9A-Za-z.+-]*) (preinstall|install|postinstall|prepare)\b/.exec(line)
+            if (phase) { lifecycle = `${phase[1]} ${phase[2]}`; progress(`安装依赖：${lifecycle}`) }
+          }
+          if (outputLine.length > 32768) outputLine = ''
+        },
       })
     } catch (error) {
       signal.throwIfAborted()
-      throw new Error(`官方 npm 包安装失败${failureCode ? `（${failureCode}）` : ''}，请检查网络、目录权限和运行依赖后重试`)
+      const timeout = error instanceof Error && 'code' in error && error.code === 'PROCESS_TIMEOUT'
+      throw new Error(`官方 npm 包安装${timeout ? '超时' : '失败'}${failureCode ? `（${failureCode}）` : ''}${lifecycle ? `，最近阶段：${lifecycle}` : ''}，请检查网络、目录权限和运行依赖后重试`)
     }
     signal.throwIfAborted()
   }
