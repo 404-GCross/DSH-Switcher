@@ -1,4 +1,5 @@
 import type { AppState, Command, CommandResult, DesktopBridge } from '../shared/types'
+import { LOCAL_SERVER_ID } from '../shared/types'
 import { parseServerUrl, loginUrlFor } from '../main/server-url'
 
 const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444']
@@ -14,9 +15,11 @@ export function createPreviewBridge(): DesktopBridge {
     ],
     activeId: ids[1], defaultId: ids[1], theme: 'light', dark: false,
     overlay: { kind: 'instances' }, notice: null, preview: true, appVersion: '0.1.0',
+    local: { installation: null, process: 'stopped', operation: null, candidates: [], latestVersion: null, error: null, logs: [], dataDirectory: '用户数据目录/local-dsh', runtimeDirectory: '用户数据目录/local-runtime' },
   }
   const listeners = new Set<(state: AppState) => void>()
   const publish = () => { for (const listener of listeners) listener(structuredClone(state)) }
+  let installTimer: ReturnType<typeof setTimeout> | undefined
   const system = matchMedia('(prefers-color-scheme: dark)')
   system.addEventListener('change', () => {
     if (state.theme === 'system') { state.dark = system.matches; publish() }
@@ -25,7 +28,7 @@ export function createPreviewBridge(): DesktopBridge {
     try {
       switch (command.type) {
         case 'overlay': state.overlay = command.overlay; break
-        case 'select': state.activeId = command.id; state.overlay = null; break
+        case 'select': state.activeId = command.id; state.overlay = command.id === LOCAL_SERVER_ID && !state.local.installation ? { kind: 'local' } : null; break
         case 'default': state.defaultId = command.id; break
         case 'save': {
           const url = parseServerUrl(command.url).baseUrl
@@ -66,6 +69,40 @@ export function createPreviewBridge(): DesktopBridge {
         case 'external': state.notice = '正式桌面版会在系统浏览器打开这个地址'; break
         case 'theme': state.theme = command.theme; state.dark = command.theme === 'dark' || command.theme === 'system' && system.matches; break
         case 'dismiss-notice': state.notice = null; break
+        case 'local.detect': state.local.candidates = []; state.local.logs.push('示例：没有检测到本机安装，可使用一键安装。'); break
+        case 'local.check-update': state.local.latestVersion = '0.2.2-rc.1'; break
+        case 'local.open-data-directory': state.notice = '桌面版会打开本机 DSH 数据目录'; break
+        case 'local.cancel': clearTimeout(installTimer); state.local.operation = null; state.local.error = '演示操作已取消'; break
+        case 'local.install':
+        case 'local.use-existing': {
+          if (state.local.operation) throw new Error('请先完成或取消当前操作')
+          state.activeId = LOCAL_SERVER_ID
+          state.local.error = null
+          state.local.operation = { kind: 'install', stage: '下载官方运行环境（演示）', progress: 0, cancellable: true }
+          let progress = 0
+          const tick = () => {
+            progress += 20
+            if (progress >= 100) {
+              state.local.installation = { source: 'managed', version: '0.2.2-rc.1', nodePath: '/示例/node', cliPath: '/示例/dsh/lib/bin.js', pnpmPath: '/示例/pnpm', root: '/示例/runtime' }
+              state.local.operation = null; state.local.process = 'running'
+              if (!state.servers.some(item => item.id === LOCAL_SERVER_ID)) state.servers.push({ id: LOCAL_SERVER_ID, local: true, name: '本机 DSH', url: 'http://127.0.0.1:40000/', status: 'ready' })
+              state.local.logs.push('示例：DSH 已启动并自动登录，未执行真实安装。')
+            } else {
+              state.local.operation = { kind: 'install', stage: progress >= 60 ? '验证 DSH 并自动登录（演示）' : '下载官方运行环境（演示）', progress, cancellable: true }
+              installTimer = setTimeout(tick, 450)
+            }
+            state = structuredClone(state); publish()
+          }
+          installTimer = setTimeout(tick, 450)
+          break
+        }
+        case 'local.stop': state.local.process = 'stopped'; state.servers = state.servers.map(item => item.id === LOCAL_SERVER_ID ? { ...item, status: 'idle' } : item); break
+        case 'local.start':
+        case 'local.restart':
+          if (!state.local.installation) throw new Error('请先安装本机 DSH')
+          state.activeId = LOCAL_SERVER_ID; state.local.process = 'running'; state.overlay = null
+          state.servers = state.servers.map(item => item.id === LOCAL_SERVER_ID ? { ...item, status: 'ready' } : item)
+          break
       }
       state = structuredClone(state)
       publish()

@@ -3,9 +3,9 @@ import { loginUrlFor } from './server-url'
 type SessionFetch = (url: string, options: RequestInit) => Promise<Response>
 
 /** Exchange a launch token in the native view's cookie jar, then verify access without the token. */
-export async function authenticateSession(baseUrl: string, input: string, fetch: SessionFetch): Promise<void> {
+export async function authenticateSession(baseUrl: string, input: string, fetch: SessionFetch, parentSignal?: AbortSignal): Promise<void> {
   const launchUrl = loginUrlFor(baseUrl, input)
-  const signal = AbortSignal.timeout(15_000)
+  const signal = AbortSignal.any([AbortSignal.timeout(15_000), ...(parentSignal ? [parentSignal] : [])])
 
   async function request(url: string, stage: string) {
     let response: Response

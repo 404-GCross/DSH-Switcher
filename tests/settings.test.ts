@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { SettingsStore } from '../src/main/settings'
+import { LOCAL_SERVER_ID } from '../src/shared/types'
 
 async function fixture(run: (directory: string) => Promise<void>) {
   const root = process.env.SWITCHER_TEST_TMP ?? os.tmpdir()
@@ -44,4 +45,19 @@ test('failed filesystem write leaves the previous in-memory settings usable', ()
   await rm(filename, { recursive: true })
   await store.update(settings => ({ ...settings, theme: 'light' }))
   assert.equal(store.snapshot.theme, 'light')
+}))
+
+test('v1 settings migrate with a backup while keeping remote identities and default selection', () => fixture(async directory => {
+  const filename = path.join(directory, 'settings.json')
+  const id = randomUUID()
+  const original = JSON.stringify({ version: 1, servers: [{ id, name: 'NAS', url: 'http://10.10.10.101:3080/' }], defaultId: id, theme: 'dark' })
+  await writeFile(filename, original)
+  const store = new SettingsStore(filename)
+  await store.load()
+  assert.equal(store.snapshot.version, 2)
+  assert.equal(store.snapshot.defaultId, id)
+  assert.equal(store.snapshot.local.installation, null)
+  assert.equal(await readFile(`${filename}.v1.bak`, 'utf8'), original)
+  await store.update(settings => ({ ...settings, defaultId: LOCAL_SERVER_ID }))
+  assert.equal(store.snapshot.defaultId, LOCAL_SERVER_ID)
 }))

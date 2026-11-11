@@ -7,8 +7,11 @@ import {
   Settings2, ArrowRight, Info,
 } from 'lucide-react'
 import type { AppState, Command, Connection, DesktopBridge, Overlay, Theme } from '../shared/types'
+import { LOCAL_SERVER_ID } from '../shared/types'
+import { LocalRuntimePanel, localStatus } from './components/LocalRuntimePanel'
 import { createPreviewBridge } from './preview'
 import './styles.css'
+import appIcon from '../../build/dsh-official.png'
 
 const bridge: DesktopBridge = window.desktop ?? createPreviewBridge()
 const overlaySurface = new URLSearchParams(location.search).get('surface') === 'overlay'
@@ -70,7 +73,7 @@ function App() {
       <section className="web-region">
         {state.preview && current?.status === 'ready'
           ? <DemoPage key={current.id} server={current} />
-          : <ConnectionPage server={current} run={run} changeOverlay={changeOverlay} />}
+          : <ConnectionPage server={current} state={state} run={run} changeOverlay={changeOverlay} />}
       </section>
       <footer className="client-footer">
         <button className={`instance-trigger ${state.overlay ? 'selected' : ''}`} onClick={() => changeOverlay(state.overlay ? null : { kind: 'instances' })}
@@ -80,6 +83,7 @@ function App() {
         <span className="footer-caption">{state.preview ? '浏览器预览 · 示例数据' : current ? statusLabels[current.status] : 'DSH Switcher'}</span>
         <div className="footer-actions">
           {current && <IconButton label="重新加载网页" onClick={() => void run({ type: 'reload', id: current.id })}><RefreshCw /></IconButton>}
+          {current?.local && <IconButton label="管理本机 DSH" onClick={() => changeOverlay({ kind: 'local' })}><Settings2 /></IconButton>}
           <IconButton label="切换客户端主题" onClick={() => void run({ type: 'theme', theme: state.dark ? 'light' : 'dark' })}>{state.dark ? <Moon /> : <Sun />}</IconButton>
           <IconButton label="关于 DSH Switcher" onClick={() => changeOverlay({ kind: 'about' })}><Info /></IconButton>
         </div>
@@ -93,14 +97,15 @@ function App() {
 type Run = (command: Command) => Promise<boolean>
 type ChangeOverlay = (overlay: Overlay) => void
 
-function ConnectionPage({ server, run, changeOverlay }: { server?: Connection; run: Run; changeOverlay: ChangeOverlay }) {
+function ConnectionPage({ server, state, run, changeOverlay }: { server?: Connection; state: AppState; run: Run; changeOverlay: ChangeOverlay }) {
   if (!server) return <div className="connection-page welcome-page">
-    <div className="app-mark"><Layers /></div><p className="eyebrow">DSH SWITCHER</p>
+    <div className="app-mark"><img src={appIcon} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /></div><p className="eyebrow">DSH SWITCHER</p>
     <h1>你的 DSH，随处连接</h1><p className="lead">本机、NAS 或云端服务器。<br />在一个窗口里，打开你熟悉的 DSH。</p>
-    <button className="primary" onClick={() => changeOverlay({ kind: 'add' })}><Plus />添加第一台服务器</button>
+    <div className="state-actions"><button className="primary" onClick={() => changeOverlay({ kind: 'local' })}><Monitor />使用本机 DSH</button><button className="secondary" onClick={() => changeOverlay({ kind: 'add' })}><Plus />连接远程服务器</button></div>
     <div className="welcome-features"><span>原生网页</span><i />独立登录<i /><span>原生插件</span></div>
   </div>
   if (server.status === 'ready') return <div className="remote-underlay" aria-hidden="true" />
+  if (server.local) return <div className="connection-page"><div className="state-icon"><Monitor /></div><p className="eyebrow">本机 DSH</p><h1>{localStatus(state.local)}</h1><p className="lead">{state.local.error ?? (state.local.operation ? '正在准备官方 DSH 运行环境，你可以打开管理面板查看进度。' : '本机 DSH 使用独立的数据目录，启动后自动登录。')}</p><button className="primary" onClick={() => changeOverlay({ kind: 'local' })}><Settings2 />管理本机 DSH</button><button className="secondary" onClick={() => changeOverlay({ kind: 'instances' })}>切换服务器</button></div>
   const loading = server.status === 'loading'
   const login = server.status === 'auth-required'
   return <div className="connection-page">
@@ -137,8 +142,9 @@ function OverlayContent({ state, run, error, changeOverlay }: { state: AppState;
   return <div className={`overlay-backdrop ${isMenu ? 'menu-backdrop' : 'modal-backdrop'}`} onPointerDown={event => {
     if (event.target === event.currentTarget) changeOverlay(null)
   }}>
-    <div className={isMenu ? 'instance-menu' : 'modal'} ref={panel} role="dialog" aria-modal="true" aria-labelledby="dialog-title" onKeyDown={trap}>
+    <div className={isMenu ? 'instance-menu' : overlay.kind === 'local' ? 'modal local-modal' : 'modal'} ref={panel} role="dialog" aria-modal="true" aria-labelledby="dialog-title" onKeyDown={trap}>
       {isMenu ? <InstanceMenu state={state} run={run} changeOverlay={changeOverlay} error={error} />
+        : overlay.kind === 'local' ? <LocalRuntimePanel state={state} run={run} close={() => changeOverlay(null)} error={error} />
         : overlay.kind === 'about' ? <About state={state} run={run} close={() => changeOverlay(null)} />
         : overlay.kind === 'remove' && server ? <RemoveServer server={server} run={run} error={error} cancel={() => changeOverlay({ kind: 'edit', id: server.id })} />
         : <ServerForm key={`${overlay.kind}-${server?.id ?? ''}`} kind={overlay.kind as 'add' | 'edit' | 'login'} server={server} run={run} error={error} preview={state.preview} changeOverlay={changeOverlay} />}
@@ -149,13 +155,14 @@ function OverlayContent({ state, run, error, changeOverlay }: { state: AppState;
 function InstanceMenu({ state, run, changeOverlay, error }: { state: AppState; run: Run; changeOverlay: ChangeOverlay; error: string }) {
   const [query, setQuery] = useState('')
   const current = state.servers.find(server => server.id === state.activeId)
-  const defaultServer = state.servers.find(server => server.id === state.defaultId)
-  const filtered = state.servers.filter(server => `${server.name} ${server.url}`.toLowerCase().includes(query.toLowerCase()))
+  const defaultServer = state.defaultId === LOCAL_SERVER_ID ? { name: '本机 DSH' } : state.servers.find(server => server.id === state.defaultId)
+  const filtered = state.servers.filter(server => !server.local && `${server.name} ${server.url}`.toLowerCase().includes(query.toLowerCase()))
   return <>
     <header className="menu-heading"><div><h2 id="dialog-title">服务器连接</h2><p>切换到你的另一个工作空间</p></div><IconButton label="关闭服务器菜单" onClick={() => changeOverlay(null)}><X /></IconButton></header>
     <div className="connection-summary"><span>当前</span><strong title={current?.name}>{current?.name ?? '未选择'}</strong><i>·</i><span>默认</span><strong title={defaultServer?.name}>{defaultServer?.name ?? '未设置'}</strong></div>
     {state.servers.length > 5 && <label className="menu-search"><Search /><input aria-label="查找服务器" placeholder="查找服务器…" value={query} onChange={event => setQuery(event.target.value)} /></label>}
     <div className="instance-list">
+      <div className={`instance-row local-instance ${state.activeId === LOCAL_SERVER_ID ? 'current' : ''}`}><button className="instance-select" aria-current={state.activeId === LOCAL_SERVER_ID} onClick={() => void run({ type: 'select', id: LOCAL_SERVER_ID })}><Monitor /><span className="instance-copy"><span className="instance-name">本机 DSH</span><span className="instance-status">{localStatus(state.local)}</span>{state.local.installation && <span className="instance-url">官方版本 {state.local.installation.version}</span>}</span></button><div className="instance-actions"><IconButton label="将本机 DSH 设为默认" className={state.defaultId === LOCAL_SERVER_ID ? 'favorite' : ''} onClick={() => void run({ type: 'default', id: LOCAL_SERVER_ID })}><Star /></IconButton><IconButton label="管理本机 DSH" onClick={() => changeOverlay({ kind: 'local' })}><Settings2 /></IconButton></div></div>
       {filtered.length === 0 && <div className="list-empty">{state.servers.length ? '没有匹配的服务器' : '添加一个 DSH Web 地址，开始连接。'}</div>}
       {filtered.map(server => <div key={server.id} className={`instance-row ${server.id === state.activeId ? 'current' : ''}`}>
         <button className="instance-select" onClick={() => void run({ type: 'select', id: server.id })} aria-current={server.id === state.activeId}>

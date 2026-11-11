@@ -27,6 +27,7 @@
     "test": "tsx --test tests/*.test.ts",
     "test:desktop": "node scripts/test-desktop.mjs",
     "test:real-dsh": "node scripts/test-real-dsh.mjs",
+    "test:local-runtime": "node scripts/test-local-runtime.mjs",
     "test:release": "node --test tests/release.test.mjs",
     "check": "npm test && npm run test:release && npm run build",
     "package:linux": "npm run build && electron-builder --linux rpm tar.gz --x64 --publish never",
@@ -34,17 +35,25 @@
     "package:mac": "npm run build && electron-builder --mac dmg zip --publish never"
   },
   "dependencies": {
+    "https-proxy-agent": "^9.1.0",
     "lucide-react": "^0.468.0",
+    "proxy-from-env": "^2.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "semver": "^7.8.6",
+    "socks-proxy-agent": "^10.1.0",
+    "tar": "^7.5.22",
+    "yauzl": "^3.4.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.0",
-    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^22.0.0",
+    "@types/proxy-from-env": "^1.0.4",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/semver": "^7.8.0",
+    "@types/yauzl": "^3.4.0",
     "@vitejs/plugin-react": "^4.7.0",
     "electron": "45.2.3",
     "electron-builder": "^26.0.0",
@@ -64,8 +73,22 @@
       "package.json"
     ],
     "asar": true,
+    "asarUnpack": [
+      "dist/main/supervisor.cjs"
+    ],
+    "extraResources": [
+      {
+        "from": "build/dsh-official.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "build/DEEPSEEK-LICENSE",
+        "to": "DEEPSEEK-LICENSE"
+      }
+    ],
     "npmRebuild": false,
     "linux": {
+      "icon": "build/dsh-official.png",
       "target": [
         "rpm",
         "tar.gz"
@@ -102,12 +125,14 @@
       ]
     },
     "win": {
+      "icon": "build/dsh-windows.png",
       "target": [
         "zip"
       ],
       "signExecutable": false
     },
     "mac": {
+      "icon": "build/dsh-macos.png",
       "target": [
         "dmg",
         "zip"

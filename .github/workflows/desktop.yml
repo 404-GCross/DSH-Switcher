@@ -50,7 +50,7 @@ jobs:
     name: Package and test ${{ matrix.platform }}
     needs: checks
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
@@ -107,6 +107,16 @@ jobs:
             xvfb-run -a npm run test:desktop
           else
             npm run test:desktop
+          fi
+      - name: Install and run official local DSH without system Node
+        env:
+          SWITCHER_TEST_EXECUTABLE: ${{ github.workspace }}/${{ matrix.executable }}
+          SWITCHER_TEST_DSH_VERSION: 0.2.2-rc.1
+        run: |
+          if [[ "$RUNNER_OS" == 'Linux' ]]; then
+            xvfb-run -a npm run test:local-runtime
+          else
+            npm run test:local-runtime
           fi
       - name: Verify RPM on Fedora 44
         if: runner.os == 'Linux'
