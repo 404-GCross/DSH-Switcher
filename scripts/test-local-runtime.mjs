@@ -104,7 +104,7 @@ try {
   local = await waitForOperation()
   assert.equal(local.process, 'running', local.error ?? '')
   assert.equal(local.installation.source, 'existing')
-  assert.equal(local.installation.cliPath, selected)
+  assert.equal(await realpath(local.installation.cliPath), await realpath(selected))
   await client.close(); client = undefined
 
   await launch()
