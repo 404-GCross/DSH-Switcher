@@ -65,7 +65,7 @@ function App() {
     return () => document.removeEventListener('keydown', handle)
   }, [state?.overlay, run])
   if (fatal) return <div className="fatal" role="alert">{fatal}</div>
-  if (!state) return overlaySurface ? null : <div className="loading"><LoaderCircle className="spin" /></div>
+  if (!state) return overlaySurface ? null : <div className="shell-loading"><LoaderCircle className="spin" /></div>
   const current = state.servers.find(server => server.id === state.activeId)
   const changeOverlay = (overlay: Overlay) => { void run({ type: 'overlay', overlay }) }
   const canShowOverlay = overlaySurface || state.preview
