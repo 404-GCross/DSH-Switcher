@@ -4,6 +4,7 @@ import { access, mkdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import type { LocalInstallation } from '../../shared/types'
 import { runtimeEnvironment } from './platform'
+import { directoryHasData } from '../dsh-home'
 
 export function redactLog(value: string): string {
   return value.replace(/\x1b\[[0-9;]*m/g, '')
@@ -111,19 +112,22 @@ export function parseReadyLine(line: string): { url: string; launchUrl: string }
   return { url: url.href, launchUrl }
 }
 
-export async function startDsh(installation: LocalInstallation, home: string, signal: AbortSignal, log: (line: string) => void, supervisor: string) {
+export async function startDsh(installation: LocalInstallation, home: string, signal: AbortSignal, log: (line: string) => void, supervisor: string, profile: 'web' | 'switcher' = 'web') {
   signal.throwIfAborted()
   await mkdir(home, { recursive: true })
   let initialize = false
-  try { await stat(path.join(home, 'profiles', 'switcher', 'package.json')) } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') initialize = true
+  try { await stat(path.join(home, 'profiles', profile, 'package.json')) } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      initialize = profile === 'switcher'
+      if (initialize && await directoryHasData(path.join(home, 'profiles', profile))) throw new Error('旧 profile 缺少 package.json，已保留现有数据，请先修复旧环境')
+    }
     else throw error
   }
   await access(installation.cliPath)
   signal.throwIfAborted()
   const env = runtimeEnvironment(installation.nodePath, [path.dirname(installation.pnpmPath)])
   env.DSH_HOME = home
-  const args = [installation.cliPath, '--profile', 'switcher', ...(initialize ? ['--from-default-profile', 'web'] : []), '--host', '127.0.0.1', '--port', '0', '--no-open']
+  const args = [installation.cliPath, '--profile', profile, ...(initialize ? ['--from-default-profile', 'web'] : []), '--host', '127.0.0.1', '--port', '0', '--no-open']
   let resolveReady!: (value: { url: string; launchUrl: string }) => void
   let rejectReady!: (error: Error) => void
   const ready = new Promise<{ url: string; launchUrl: string }>((resolve, reject) => { resolveReady = resolve; rejectReady = reject })

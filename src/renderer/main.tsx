@@ -9,9 +9,10 @@ import {
 import type { AppState, Command, Connection, DesktopBridge, Overlay, Theme } from '../shared/types'
 import { LOCAL_SERVER_ID } from '../shared/types'
 import { LocalRuntimePanel, localStatus } from './components/LocalRuntimePanel'
+import { DesktopSettings } from './components/DesktopSettings'
 import { createPreviewBridge } from './preview'
 import './styles.css'
-import appIcon from '../../build/dsh-official.png'
+import appIcon from '../../build/dsh-windows.png'
 
 const bridge: DesktopBridge = window.desktop ?? createPreviewBridge()
 const overlaySurface = new URLSearchParams(location.search).get('surface') === 'overlay'
@@ -85,6 +86,7 @@ function App() {
           {current && <IconButton label="重新加载网页" onClick={() => void run({ type: 'reload', id: current.id })}><RefreshCw /></IconButton>}
           {current?.local && <IconButton label="管理本机 DSH" onClick={() => changeOverlay({ kind: 'local' })}><Settings2 /></IconButton>}
           <IconButton label="切换客户端主题" onClick={() => void run({ type: 'theme', theme: state.dark ? 'light' : 'dark' })}>{state.dark ? <Moon /> : <Sun />}</IconButton>
+          <IconButton label="客户端设置" onClick={() => changeOverlay({ kind: 'settings' })}><Settings2 /></IconButton>
           <IconButton label="关于 DSH Switcher" onClick={() => changeOverlay({ kind: 'about' })}><Info /></IconButton>
         </div>
       </footer>
@@ -105,7 +107,7 @@ function ConnectionPage({ server, state, run, changeOverlay }: { server?: Connec
     <div className="welcome-features"><span>原生网页</span><i />独立登录<i /><span>原生插件</span></div>
   </div>
   if (server.status === 'ready') return <div className="remote-underlay" aria-hidden="true" />
-  if (server.local) return <div className="connection-page"><div className="state-icon"><Monitor /></div><p className="eyebrow">本机 DSH</p><h1>{localStatus(state.local)}</h1><p className="lead">{state.local.error ?? (state.local.operation ? '正在准备官方 DSH 运行环境，你可以打开管理面板查看进度。' : '本机 DSH 使用独立的数据目录，启动后自动登录。')}</p><button className="primary" onClick={() => changeOverlay({ kind: 'local' })}><Settings2 />管理本机 DSH</button><button className="secondary" onClick={() => changeOverlay({ kind: 'instances' })}>切换服务器</button></div>
+  if (server.local) return <div className="connection-page"><div className="state-icon"><Monitor /></div><p className="eyebrow">本机 DSH</p><h1>{localStatus(state.local)}</h1><p className="lead">{state.local.error ?? (state.local.operation ? '正在准备官方 DSH 运行环境，你可以打开管理面板查看进度。' : state.local.home.migrationPending ? '请先在管理面板确认旧数据环境的迁移方式。' : '本机 DSH 使用所选配置目录，启动后自动登录。')}</p><button className="primary" onClick={() => changeOverlay({ kind: 'local' })}><Settings2 />管理本机 DSH</button><button className="secondary" onClick={() => changeOverlay({ kind: 'instances' })}>切换服务器</button></div>
   const loading = server.status === 'loading'
   const login = server.status === 'auth-required'
   return <div className="connection-page">
@@ -145,6 +147,7 @@ function OverlayContent({ state, run, error, changeOverlay }: { state: AppState;
     <div className={isMenu ? 'instance-menu' : overlay.kind === 'local' ? 'modal local-modal' : 'modal'} ref={panel} role="dialog" aria-modal="true" aria-labelledby="dialog-title" onKeyDown={trap}>
       {isMenu ? <InstanceMenu state={state} run={run} changeOverlay={changeOverlay} error={error} />
         : overlay.kind === 'local' ? <LocalRuntimePanel state={state} run={run} close={() => changeOverlay(null)} error={error} />
+        : overlay.kind === 'settings' ? <DesktopSettings state={state} run={run} close={() => changeOverlay(null)} error={error} />
         : overlay.kind === 'about' ? <About state={state} run={run} close={() => changeOverlay(null)} />
         : overlay.kind === 'remove' && server ? <RemoveServer server={server} run={run} error={error} cancel={() => changeOverlay({ kind: 'edit', id: server.id })} />
         : <ServerForm key={`${overlay.kind}-${server?.id ?? ''}`} kind={overlay.kind as 'add' | 'edit' | 'login'} server={server} run={run} error={error} preview={state.preview} changeOverlay={changeOverlay} />}

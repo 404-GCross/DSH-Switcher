@@ -33,7 +33,7 @@ try {
     runtime.once('exit', code => { clearTimeout(timer); reject(new Error(`DSH exited before readiness (${code})`)) })
   })
   const extra = process.env.SWITCHER_TEST_HEADLESS === '1' ? ['--ozone-platform=headless', '--disable-gpu'] : []
-  client = await electron.launch({ args: [process.cwd(), ...extra], env: { ...process.env, SWITCHER_USER_DATA: path.join(directory, 'client'), SWITCHER_DEV_URL: '' }, timeout: 30000 })
+  client = await electron.launch({ args: [process.cwd(), ...extra], env: { ...process.env, DSH_HOME: path.join(directory, 'client-home'), SWITCHER_USER_DATA: path.join(directory, 'client'), SWITCHER_DEV_URL: '' }, timeout: 30000 })
   await expect.poll(() => client.windows().some(page => page.url().includes('/renderer/index.html') && !page.url().includes('surface=overlay')), { timeout: 15000 }).toBe(true)
   const page = client.windows().find(page => page.url().includes('/renderer/index.html') && !page.url().includes('surface=overlay'))
   const result = await page.evaluate(url => window.desktop.command({ type: 'save', name: '真实 DSH 本地验证', url }), url)

@@ -29,12 +29,14 @@ Linux 原生支持 X11 / Wayland；CI 验证 Fedora 44 的安装、依赖与卸�
 ## 当前功能
 
 - 添加、编辑、移除服务器，以及设置启动时使用的默认连接。
-- 每台服务器独立的持久化 Cookie 和网页存储；切换时保留已打开网页。
+- 每台服务器独立的持久化 Cookie 和网页存储；只保留当前一张 DSH 网页，切换会销毁旧网页，返回时重新加载。未保存草稿不会保留。
 - 左下角向上展开的服务器菜单，覆盖在原生网页上方。
 - 登录链接认证、加载状态、401 / 403 / 网络错误页和重新加载。
 - 原生文件选择、下载保存对话框、外部链接，以及客户端明暗主题。
 - 本机官方 DSH 一键安装：自动准备 Node.js 和 pnpm、独立更新、自动启动及登录。
 - 复用已有官方 DSH CLI，查看本机进度、脱敏日志，启动、停止和重启。
+- 默认使用官方数据目录和 `web` profile，与 CC Switch 共享提供商配置；旧独立环境可备份迁移或继续使用。
+- 关闭窗口收起到系统托盘；托盘菜单支持显示窗口、切换服务器、本机控制、设置、关于和退出。
 
 ## 在本机安装 DSH
 
@@ -43,17 +45,37 @@ Linux 原生支持 X11 / Wayland；CI 验证 Fedora 44 的安装、依赖与卸�
 1. 从官方 npm 查询所选版本（`latest` 或精确版本号）的 Node.js 要求。
 2. 优先使用本机兼容且带 npm 的 Node.js；缺少时优先下载兼容的官方 Node.js 24 LTS，只有 DSH 要求更高版本时才选择其他兼容 LTS，并核对官方 SHA256 清单。Node.js 和 DSH 均按本机架构安装。
 3. 在用户目录安装官方 `@deepseek-ai/dsh` 和固定版本 pnpm，验证 CLI 后启用。无需 sudo，不修改系统全局 npm 安装。
-4. 使用独立 `DSH_HOME`、`switcher` profile 和系统分配的回环端口启动。只读取本次子进程返回的启动链接，自动认证后打开 DSH 原生网页。
+4. 使用所选数据目录、标准 `web` profile 和系统分配的回环端口启动。只读取本次子进程返回的启动链接，自动认证后打开 DSH 原生网页。
 
-本机管理页显示阶段、下载进度、错误和取消入口；安装期间可以继续切换远程连接。运行环境位于 Electron `userData/local-runtime/`，会话、插件等数据位于 `userData/local-dsh/`，页面中的 **路径与诊断日志** 显示完整地址。已有命令行 DSH 的数据不会自动导入。
+本机管理页显示阶段、下载进度、错误和取消入口；安装期间可以继续切换远程连接或收起窗口。程序运行环境位于 Electron `userData/local-runtime/`，数据目录独立选择，默认遵循继承的 `DSH_HOME`，未设置时为 `~/.dsh`。**数据目录与 CC Switch 兼容** 区域显示实际路径和 profile，并可复制、打开或改用自定义绝对路径。
 
-**使用本机已有的 DSH** 可自动检测或手动填写官方 CLI 与 Node.js 路径；客户端复用这个 CLI，并在自己目录准备 pnpm。该方式仍使用上述独立 DSH 数据目录。仅选择 CLI 不会接管已经运行的其他 DSH 服务。
+**使用本机已有的 DSH** 可自动检测或手动填写官方 CLI 与 Node.js 路径；客户端复用这个 CLI，并在自己目录准备 pnpm。该方式使用所选数据目录。仅选择 CLI 不会接管已经运行的其他 DSH 服务。
 
 **更新官方 DSH** 查询官方 npm，安装新版本到新目录。安装验证成功后停止本机进程、切换运行环境并重启；正在执行的任务会中断。下载、安装或校验失败时保留当前配置和运行环境，旧安装目录保留供排查。新版本启用后的启动失败会显示日志；持久化数据可能已迁移，因此不自动降级，也不接受低于当前 DSH 的版本。
 
-关闭客户端会停止其本机 DSH 和安装子进程；守护进程通过标准输入生命周期处理客户端异常退出。远程服务器由服务端管理。连接、运行环境和 DSH 数据在卸载客户端时保留。配置从 v1 升级到 v2 时创建 `settings.json.v1.bak`。
+明确选择 **退出** 才会停止客户端托管的本机 DSH 和安装子进程；守护进程通过标准输入生命周期处理客户端异常退出。远程服务器由服务端管理。连接、运行环境和 DSH 数据在卸载客户端时保留。
 
 下载遵循继承的代理变量，未设置时查询桌面系统代理。npm 包操作使用同一个代理选择。原始 npm 安装输出不向界面或日志转发；失败显示错误代码。DSH 运行日志对 token、Cookie 和常见认证字段脱敏并限量保留。
+
+### CC Switch 与旧数据升级
+
+让 CC Switch 的 DSH 数据目录与本机管理页显示的路径一致。客户端选用 `web` profile，读取 `profiles/web/cordis.patch.yml` 与共享 `.credentials.yaml`，提供商、模型和凭据由官方 DSH 解析。CC Switch 使用自定义目录时，在客户端选择同一路径；桌面菜单启动的应用不一定继承终端里的环境变量。修改后可重启本机 DSH 以重新读取配置。
+
+升级旧客户端时，设置文件自动迁移到 v3，保留 `settings.json.v1.bak` 或 `settings.json.v2.bak`。发现旧 `local-dsh` 环境后先展示选择界面，确认前不自动启动：
+
+- **备份迁移并启动**：仅允许空的官方目标目录；保留旧环境并备份到 `userData/backups/`，复制到临时目录，将 `switcher` profile 转为 `web`，恢复插件依赖并用官方 CLI 验证，再启用。不会覆盖已有官方数据。
+- **使用官方目录**：直接使用现有 `DSH_HOME` / `~/.dsh`，保留旧环境。
+- **继续旧环境**：沿用 `userData/local-dsh` 和 `switcher` profile；可稍后迁移，该 profile 不在 CC Switch 默认管理范围内。
+
+迁移失败或取消时保留旧数据及已创建的备份，不切换数据环境。旧环境同时存在 `web` 和 `switcher`、目录互相包含、目录包含符号链接等情况会停止迁移；依赖目录 `node_modules` 不复制，由 pnpm 恢复。迁移需要一个已安装的官方 CLI；尚未安装时，可先选择继续旧环境完成安装。
+
+### 托盘与桌面环境
+
+点击 **×** 默认收起窗口，保留当前网页、本机 DSH 和后台安装。托盘右键菜单或再次启动应用可恢复窗口。客户端设置可改为最小化或退出；切换服务器只销毁网页，不停止本机服务。
+
+Linux 通过会话 D-Bus 检测实际 StatusNotifier / AppIndicator watcher 和注册的托盘宿主，优先适配 Fedora KDE，同时适用于提供该服务的其他 X11 / Wayland 桌面。没有托盘时关闭窗口退化为最小化，并显示原因；托盘服务消失时会恢复隐藏窗口。GNOME 可启用 AppIndicator 扩展，平铺桌面需配置面板托盘（例如 Waybar）。Windows / macOS 使用 Electron 原生托盘。
+
+自动化覆盖托盘探测、菜单状态、窗口收起/恢复和退出清理；Linux headless / Xvfb 测试不等同于实际 KDE、GNOME、Wayland 面板的人工验证。
 
 ## 从源码运行桌面版
 
@@ -112,11 +134,11 @@ npm run package:win
 npm run package:mac
 ```
 
-桌面测试使用独立的临时用户目录和 HTTP 测试服务，验证真实 WebContentsView、401 登录、Cookie 隔离、菜单层级和重启恢复；需要图形显示服务，Linux CI 可用 `xvfb-run -a npm run test:desktop`。`SWITCHER_TEST_HEADLESS=1` 可以尝试 Chromium 的 headless 平台，取决于 Electron 和宿主支持情况。
+桌面测试使用独立的临时用户目录、`DSH_HOME` 和 HTTP 测试服务，验证真实 WebContentsView 销毁与重建、Cookie 保留、单网页约束、401 登录、菜单层级、关窗/恢复、明确退出和重启恢复；需要图形显示服务，Linux CI 可用 `xvfb-run -a npm run test:desktop`。`SWITCHER_TEST_HEADLESS=1` 可以尝试 Chromium 的 headless 平台，取决于 Electron 和宿主支持情况。
 
 `test:real-dsh` 需要已安装的 `dsh` 命令（也可通过 `DSH_BIN` 指定），使用隔离的 DSH home 启动真实 Web 服务，验证登录、官方首次启动页面与工作区选择入口。它不发送模型请求，也不需要 API key。
 
-`test:local-runtime` 从干净用户目录强制下载官方 Node.js，再安装指定官方 DSH，验证取消、安装期间 IPC 响应、自动登录、停止/重启、真实外部插件安装和加载、失败更新保留旧环境、已有 CLI 接入，以及客户端重启。测试不调用模型，默认 DSH `0.2.2-rc.1`，可通过 `SWITCHER_TEST_DSH_VERSION` 指定。`SWITCHER_TEST_EXECUTABLE` 可指定打包后的应用；首次下载需要访问 Node.js 和 npm 官方站点。
+`test:local-runtime` 从干净用户目录强制下载官方 Node.js，再安装指定官方 DSH，验证取消、关窗后台安装、切换网页不重启本机进程、CC Switch 格式的提供商/模型与凭据引用读取、自动登录、真实外部插件安装和加载、失败更新保留旧环境、已有 CLI 接入、旧 profile 备份迁移与依赖恢复，以及退出清理和客户端重启。测试使用虚构凭据，不调用模型，默认 DSH `0.2.2-rc.1`，可通过 `SWITCHER_TEST_DSH_VERSION` 指定。`SWITCHER_TEST_EXECUTABLE` 可指定打包后的应用；首次下载需要访问 Node.js 和 npm 官方站点。
 
 产物位于 `release/`。Linux 构建 RPM 需要 `rpmbuild`（Fedora 安装 `rpm-build`，Ubuntu 安装 `rpm`）。Windows 和 macOS 推荐在对应系统打包；Actions 使用各系统原生 runner。打包器使用官方平台 PNG 生成平台图标。
 
@@ -125,7 +147,7 @@ npm run package:mac
 `.github/workflows/desktop.yml` 在 `main` 推送、PR 和手动触发时运行：
 
 1. `npm ci` 使用锁文件安装；actionlint 检查工作流；运行单元测试、发布完整性测试、TypeScript 检查和生产构建。
-2. 桌面集成测试验证原生网页、401 登录、Cookie 隔离、页面草稿、菜单层级和重启恢复。
+2. 桌面集成测试验证原生网页销毁/重建、401 登录、Cookie 隔离与保留、菜单层级、关窗/恢复和退出。
 3. Linux、Windows、macOS arm64 / x64 各自构建，对打包后的应用运行桌面与本机安装集成测试，检查实际进程架构；本机安装测试强制使用下载的 Node.js，不复用 runner 的系统 Node。
 4. Linux 额外在 Fedora 44 容器中安装 RPM，检查依赖、图标、desktop 文件、可执行文件和卸载。
 5. 每个平台生成带 SHA256、大小、版本和源码提交的产物清单；发布前验证所有四个平台的完整性。

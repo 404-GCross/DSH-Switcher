@@ -6,6 +6,7 @@ import { z } from 'zod'
 import type { Settings } from '../shared/types'
 import { LOCAL_SERVER_ID } from '../shared/types'
 import { parseServerUrl } from './server-url'
+import { directoryHasData } from './dsh-home'
 
 const fields = {
   servers: z.array(z.object({
@@ -22,14 +23,22 @@ const installation = z.object({
   nodePath: z.string().refine(path.isAbsolute), cliPath: z.string().refine(path.isAbsolute),
   pnpmPath: z.string().refine(path.isAbsolute), root: z.string().refine(path.isAbsolute),
 }).strict()
-const schema = z.object({ ...fields, version: z.literal(2), local: z.object({ installation: installation.nullable() }).strict() }).strict().superRefine((value, context) => {
+export const homeSelectionSchema = z.union([
+  z.object({ mode: z.enum(['official', 'legacy']) }).strict(),
+  z.object({ mode: z.literal('custom'), directory: z.string().min(1).refine(path.isAbsolute) }).strict(),
+])
+const schema = z.object({
+  ...fields, version: z.literal(3),
+  local: z.object({ installation: installation.nullable(), home: homeSelectionSchema, migrationPending: z.boolean(), backupDirectory: z.string().nullable() }).strict(),
+  desktop: z.object({ closeBehavior: z.enum(['tray', 'minimize', 'quit']) }).strict(),
+}).strict().superRefine((value, context) => {
   const ids = new Set(value.servers.map(server => server.id))
   if (ids.size !== value.servers.length) context.addIssue({ code: 'custom', message: 'Duplicate server identity' })
   if (ids.has(LOCAL_SERVER_ID)) context.addIssue({ code: 'custom', message: 'Reserved local identity' })
   if (value.defaultId && value.defaultId !== LOCAL_SERVER_ID && !ids.has(value.defaultId)) context.addIssue({ code: 'custom', message: 'Unknown default server' })
 })
 
-export const emptySettings = (): Settings => ({ version: 2, servers: [], defaultId: null, theme: 'system', local: { installation: null } })
+export const emptySettings = (): Settings => ({ version: 3, servers: [], defaultId: null, theme: 'system', local: { installation: null, home: { mode: 'official' }, migrationPending: false, backupDirectory: null }, desktop: { closeBehavior: 'tray' } })
 
 /** Serialized, atomic settings writes; a failed write does not publish the proposed value. */
 export class SettingsStore {
@@ -44,13 +53,23 @@ export class SettingsStore {
       throw error
     }
     let candidate: unknown = JSON.parse(data)
-    const legacy = z.object({ ...fields, version: z.literal(1) }).strict().safeParse(candidate)
-    if (legacy.success) candidate = { ...legacy.data, version: 2, local: { installation: null } }
+    const v1 = z.object({ ...fields, version: z.literal(1) }).strict().safeParse(candidate)
+    const v2 = z.object({ ...fields, version: z.literal(2), local: z.object({ installation: installation.nullable() }).strict() }).strict().safeParse(candidate)
+    const previous = v1.success ? v1.data : v2.success ? v2.data : null
+    if (previous) {
+      const installed = v2.success ? v2.data.local.installation : null
+      const hasLegacy = !!installed || await directoryHasData(path.join(path.dirname(this.filename), 'local-dsh'))
+      candidate = {
+        ...previous, version: 3,
+        local: { installation: installed, home: { mode: hasLegacy ? 'legacy' : 'official' }, migrationPending: hasLegacy, backupDirectory: null },
+        desktop: { closeBehavior: 'tray' },
+      }
+    }
     const parsed = schema.safeParse(candidate)
     if (!parsed.success) throw new Error('连接配置格式无效。原文件已保留，请检查 settings.json')
     this.value = parsed.data
-    if (legacy.success) {
-      try { await copyFile(this.filename, `${this.filename}.v1.bak`, constants.COPYFILE_EXCL) } catch (error) {
+    if (previous) {
+      try { await copyFile(this.filename, `${this.filename}.v${previous.version}.bak`, constants.COPYFILE_EXCL) } catch (error) {
         if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error
       }
       await this.update(settings => settings)

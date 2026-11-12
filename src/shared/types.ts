@@ -1,6 +1,20 @@
 export type Theme = 'system' | 'light' | 'dark'
 export type ConnectionStatus = 'idle' | 'loading' | 'ready' | 'auth-required' | 'forbidden' | 'offline'
-export type Overlay = { kind: 'instances' | 'add' | 'about' | 'local' } | { kind: 'edit' | 'login' | 'remove'; id: string } | null
+export type Overlay = { kind: 'instances' | 'add' | 'about' | 'local' | 'settings' } | { kind: 'edit' | 'login' | 'remove'; id: string } | null
+
+export type DshHomeSelection = { mode: 'official' | 'legacy' } | { mode: 'custom'; directory: string }
+export type CloseBehavior = 'tray' | 'minimize' | 'quit'
+export interface TrayState { status: 'checking' | 'available' | 'unavailable'; detail: string }
+export interface DshHomeState {
+  selection: DshHomeSelection
+  profile: 'web' | 'switcher'
+  officialDirectory: string
+  legacyDirectory: string
+  migrationPending: boolean
+  legacyHasData: boolean
+  targetHasData: boolean
+  backupDirectory: string | null
+}
 
 export const LOCAL_SERVER_ID = '00000000-0000-4000-8000-000000000001'
 
@@ -20,7 +34,7 @@ export interface LocalCandidate {
   nodeVersion: string
 }
 
-export type LocalAction = 'detect' | 'install' | 'use-existing' | 'start' | 'stop' | 'restart' | 'check-update'
+export type LocalAction = 'detect' | 'install' | 'use-existing' | 'start' | 'stop' | 'restart' | 'check-update' | 'configure-home' | 'migrate-home'
 
 export interface LocalRuntimeState {
   installation: LocalInstallation | null
@@ -32,6 +46,7 @@ export interface LocalRuntimeState {
   logs: string[]
   dataDirectory: string
   runtimeDirectory: string
+  home: DshHomeState
 }
 
 export interface Server {
@@ -47,11 +62,12 @@ export interface Connection extends Server {
 }
 
 export interface Settings {
-  version: 2
+  version: 3
   servers: Server[]
   defaultId: string | null
   theme: Theme
-  local: { installation: LocalInstallation | null }
+  local: { installation: LocalInstallation | null; home: DshHomeSelection; migrationPending: boolean; backupDirectory: string | null }
+  desktop: { closeBehavior: CloseBehavior }
 }
 
 export interface AppState {
@@ -65,12 +81,14 @@ export interface AppState {
   preview: boolean
   appVersion: string
   local: LocalRuntimeState
+  desktop: { closeBehavior: CloseBehavior; tray: TrayState }
 }
 
 export type LocalCommand =
-  | { type: 'local.detect' | 'local.cancel' | 'local.start' | 'local.stop' | 'local.restart' | 'local.check-update' | 'local.open-data-directory' }
+  | { type: 'local.detect' | 'local.cancel' | 'local.start' | 'local.stop' | 'local.restart' | 'local.check-update' | 'local.open-data-directory' | 'local.copy-data-directory' | 'local.migrate-home' }
   | { type: 'local.install'; version: string }
   | { type: 'local.use-existing'; cliPath: string; nodePath: string }
+  | { type: 'local.configure-home'; selection: DshHomeSelection }
 
 export type Command =
   | LocalCommand
@@ -84,6 +102,8 @@ export type Command =
   | { type: 'external'; id: string }
   | { type: 'theme'; theme: Theme }
   | { type: 'dismiss-notice' }
+  | { type: 'desktop.close-behavior'; value: CloseBehavior }
+  | { type: 'desktop.show' | 'desktop.quit' | 'desktop.check-tray' }
 
 export type CommandResult = { ok: true } | { ok: false; error: string }
 

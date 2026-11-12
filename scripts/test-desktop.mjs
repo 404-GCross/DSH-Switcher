@@ -1,6 +1,6 @@
 import { _electron as electron, expect } from '@playwright/test'
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { once } from 'node:events'
 import os from 'node:os'
 import path from 'node:path'
@@ -44,7 +44,7 @@ async function launch() {
   client = await electron.launch({
     executablePath: process.env.SWITCHER_TEST_EXECUTABLE,
     args: [...(process.env.SWITCHER_TEST_EXECUTABLE ? [] : [process.cwd()]), ...extra],
-    env: { ...process.env, SWITCHER_USER_DATA: directory, SWITCHER_DEV_URL: '' },
+    env: { ...process.env, DSH_HOME: path.join(directory, 'official-home'), SWITCHER_USER_DATA: directory, SWITCHER_DEV_URL: '' },
     timeout: 30000,
   })
   if (process.env.SWITCHER_EXPECT_ARCH) assert.equal(await client.evaluate(() => process.arch), process.env.SWITCHER_EXPECT_ARCH)
@@ -95,12 +95,15 @@ try {
   assert.equal(native.bridge, 'undefined')
   assert.equal(native.require, 'undefined')
 
-  await client.evaluate(async ({ webContents }, url) => {
-    await webContents.getAllWebContents().find(item => item.getURL() === url).executeJavaScript('document.getElementById("draft").value = "retained draft"')
+  const oldAlpha = await client.evaluate(async ({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
+    await contents.executeJavaScript('document.getElementById("draft").value = "unsaved draft"; window.onbeforeunload = () => false; undefined')
+    return contents.id
   }, a)
 
   await command(page, { type: 'save', name: 'Beta', url: b })
   await waitStatus(page, 'auth-required')
+  assert.equal(await client.evaluate(({ webContents }, id) => !!webContents.fromId(id), oldAlpha), false)
   const betaId = (await state(page)).activeId
   await page.getByRole('button', { name: '输入登录链接' }).click()
   const loginPage = client.windows().find(item => item.url().includes('surface=overlay'))
@@ -117,7 +120,10 @@ try {
 
   await command(page, { type: 'select', id: alphaId })
   await waitStatus(page, 'ready')
-  assert.equal(await client.evaluate(async ({ webContents }, url) => webContents.getAllWebContents().find(item => item.getURL() === url).executeJavaScript('document.getElementById("draft").value'), a), 'retained draft')
+  assert.equal(await client.evaluate(async ({ webContents }, url) => webContents.getAllWebContents().find(item => item.getURL() === url).executeJavaScript('document.getElementById("draft").value'), a), '')
+  const currentAlpha = await client.evaluate(({ webContents }, url) => webContents.getAllWebContents().find(item => item.getURL() === url).id, a)
+  assert.notEqual(currentAlpha, oldAlpha)
+  assert.equal(await client.evaluate(({ webContents }) => webContents.getAllWebContents().filter(item => /^http:/.test(item.getURL())).length), 1)
 
   await command(page, { type: 'overlay', overlay: { kind: 'instances' } })
   const overlayPage = client.windows().find(item => item.url().includes('surface=overlay'))
@@ -127,7 +133,6 @@ try {
   const remote = views.find(view => view.url === a)
   assert.equal(views.at(-1).bounds.height - remote.bounds.height, 44)
   const screenshot = await client.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0].capturePage()).toPNG().toString('base64'))
-  const { writeFile } = await import('node:fs/promises')
   await writeFile(path.join(artifactDir, 'desktop-instance-menu.png'), Buffer.from(screenshot, 'base64'))
   await overlayPage.screenshot({ path: path.join(artifactDir, 'desktop-overlay.png'), omitBackground: true })
   await command(page, { type: 'default', id: betaId })
@@ -141,7 +146,26 @@ try {
   assert.match(rejected.error, /Cookie 验证仍为 HTTP 401/)
   assert.equal((await state(page)).servers.length, 2)
 
-  await client.close()
+  await command(page, { type: 'overlay', overlay: { kind: 'settings' } })
+  await expect(overlayPage.getByRole('heading', { name: '客户端设置' })).toBeVisible()
+  await overlayPage.screenshot({ path: path.join(artifactDir, 'desktop-settings-light.png'), omitBackground: true })
+  await command(page, { type: 'theme', theme: 'dark' })
+  await overlayPage.screenshot({ path: path.join(artifactDir, 'desktop-settings-dark.png'), omitBackground: true, animations: 'disabled' })
+  await command(page, { type: 'overlay', overlay: null })
+  await command(page, { type: 'desktop.check-tray' })
+  const tray = (await state(page)).desktop.tray.status
+  await client.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].close() })
+  // Xvfb/headless may have no window manager: minimize acknowledgement is not guaranteed there.
+  assert.equal(await client.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1)
+  assert.equal(await client.evaluate(({ webContents }, id) => !!webContents.fromId(id), currentAlpha), true)
+  if (tray === 'available') await expect.poll(() => client.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(false)
+  else await expect.poll(async () => (await state(page)).notice).toMatch(/最小化/)
+  await command(page, { type: 'desktop.show' })
+  await expect.poll(() => client.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(true)
+
+  const closed = client.waitForEvent('close')
+  await command(page, { type: 'desktop.quit' }).catch(error => { assert.match(error.message, /Target page, context or browser has been closed/) })
+  await closed
   client = undefined
   page = await launch()
   await waitStatus(page, 'ready')
@@ -152,7 +176,26 @@ try {
   assert.equal((await state(page)).activeId, alphaId)
   assert.equal((await state(page)).servers.length, 1)
 
-  console.log('PASS: native page, plugin content, isolated cookies, retained draft, native overlay, credential-free config, restart, theme, removal')
+  await client.close()
+  client = undefined
+  await mkdir(path.join(directory, 'local-dsh'))
+  await writeFile(path.join(directory, 'local-dsh', 'legacy-session.json'), '{"preserved":true}')
+  const legacy = { version: 2, servers: [], defaultId: '00000000-0000-4000-8000-000000000001', theme: 'light', local: { installation: null } }
+  await writeFile(path.join(directory, 'settings.json'), JSON.stringify(legacy))
+  page = await launch()
+  const migrationPanel = client.windows().find(item => item.url().includes('surface=overlay'))
+  await expect(migrationPanel.getByRole('heading', { name: '选择升级后的 DSH 数据环境' })).toBeVisible()
+  assert.equal((await state(page)).local.process, 'stopped')
+  await migrationPanel.screenshot({ path: path.join(artifactDir, 'desktop-migration-light.png'), omitBackground: true })
+  await command(page, { type: 'theme', theme: 'dark' })
+  await migrationPanel.screenshot({ path: path.join(artifactDir, 'desktop-migration-dark.png'), omitBackground: true, animations: 'disabled' })
+  await migrationPanel.getByRole('button', { name: '使用官方目录', exact: true }).click()
+  await expect.poll(async () => (await state(page)).local.home.migrationPending).toBe(false)
+  assert.equal((await state(page)).local.home.profile, 'web')
+  assert.equal(await readFile(path.join(directory, 'local-dsh', 'legacy-session.json'), 'utf8'), '{"preserved":true}')
+  assert.deepEqual(JSON.parse(await readFile(path.join(directory, 'settings.json.v2.bak'), 'utf8')), legacy)
+
+  console.log('PASS: native page, isolated cookies, old page destroyed (including beforeunload), fresh draft, one live page, native overlay, close/restore, explicit exit, restart, theme, removal')
 } finally {
   if (client) await client.close()
   await Promise.all(servers.map(server => new Promise(resolve => { server.closeAllConnections(); server.close(resolve) })))

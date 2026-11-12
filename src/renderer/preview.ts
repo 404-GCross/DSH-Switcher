@@ -15,7 +15,8 @@ export function createPreviewBridge(): DesktopBridge {
     ],
     activeId: ids[1], defaultId: ids[1], theme: 'light', dark: false,
     overlay: { kind: 'instances' }, notice: null, preview: true, appVersion: '0.1.0',
-    local: { installation: null, process: 'stopped', operation: null, candidates: [], latestVersion: null, error: null, logs: [], dataDirectory: '用户数据目录/local-dsh', runtimeDirectory: '用户数据目录/local-runtime' },
+    local: { installation: null, process: 'stopped', operation: null, candidates: [], latestVersion: null, error: null, logs: [], dataDirectory: '/home/demo/.dsh', runtimeDirectory: '用户数据目录/local-runtime', home: { selection: { mode: 'official' }, profile: 'web', officialDirectory: '/home/demo/.dsh', legacyDirectory: '用户数据目录/local-dsh', migrationPending: false, legacyHasData: false, targetHasData: false, backupDirectory: null } },
+    desktop: { closeBehavior: 'tray', tray: { status: 'unavailable', detail: '浏览器预览不提供系统托盘，桌面版会检测实际托盘服务。' } },
   }
   const listeners = new Set<(state: AppState) => void>()
   const publish = () => { for (const listener of listeners) listener(structuredClone(state)) }
@@ -72,6 +73,18 @@ export function createPreviewBridge(): DesktopBridge {
         case 'local.detect': state.local.candidates = []; state.local.logs.push('示例：没有检测到本机安装，可使用一键安装。'); break
         case 'local.check-update': state.local.latestVersion = '0.2.2-rc.1'; break
         case 'local.open-data-directory': state.notice = '桌面版会打开本机 DSH 数据目录'; break
+        case 'local.copy-data-directory': state.notice = '桌面版会复制所选数据目录的路径'; break
+        case 'local.configure-home':
+          state.local.home.selection = command.selection
+          state.local.home.profile = command.selection.mode === 'legacy' ? 'switcher' : 'web'
+          state.local.dataDirectory = command.selection.mode === 'custom' ? command.selection.directory : command.selection.mode === 'official' ? state.local.home.officialDirectory : state.local.home.legacyDirectory
+          state.local.home.migrationPending = false
+          break
+        case 'local.migrate-home': state.notice = '桌面版会备份旧数据并验证迁移，此处仅为预览'; break
+        case 'desktop.close-behavior': state.desktop.closeBehavior = command.value; break
+        case 'desktop.check-tray': state.notice = '浏览器预览没有原生托盘，桌面版会重新检测'; break
+        case 'desktop.show': break
+        case 'desktop.quit': state.notice = '桌面版将停止托管进程并退出；浏览器预览不会关闭标签页'; break
         case 'local.cancel': clearTimeout(installTimer); state.local.operation = null; state.local.error = '演示操作已取消'; break
         case 'local.install':
         case 'local.use-existing': {

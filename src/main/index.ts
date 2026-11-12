@@ -1,4 +1,4 @@
-import { app, BrowserWindow, WebContentsView, ipcMain, session, shell, nativeTheme, dialog, Menu } from 'electron'
+import { app, BrowserWindow, WebContentsView, ipcMain, session, shell, nativeTheme, dialog, Menu, clipboard, powerMonitor } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
 import path from 'node:path'
 import { mkdir } from 'node:fs/promises'
@@ -7,15 +7,18 @@ import { z } from 'zod'
 import type { AppState, Command, CommandResult, ConnectionStatus, Overlay, Server } from '../shared/types'
 import { LOCAL_SERVER_ID } from '../shared/types'
 import type { LocalCommand } from '../shared/types'
-import { SettingsStore } from './settings'
+import { SettingsStore, homeSelectionSchema } from './settings'
 import { isWebUrl, isWithinServer, loginUrlFor, parseServerUrl } from './server-url'
 import { authenticateSession } from './authenticate'
 import { readAuthenticationHeaders } from './auth-transport'
 import { LocalRuntimeManager } from './local-runtime/manager'
+import { ViewManager } from './view-manager'
+import { TrayController } from './tray-controller'
+import { WindowLifecycle } from './window-lifecycle'
 
 const FOOTER_HEIGHT = 44
 const overlaySchema = z.union([
-  z.object({ kind: z.enum(['instances', 'add', 'about', 'local']) }).strict(),
+  z.object({ kind: z.enum(['instances', 'add', 'about', 'local', 'settings']) }).strict(),
   z.object({ kind: z.enum(['edit', 'login', 'remove']), id: z.uuid() }).strict(),
   z.null(),
 ])
@@ -27,23 +30,17 @@ const commands = z.discriminatedUnion('type', [
   z.object({ type: z.literal('login'), id: z.uuid(), url: z.string().max(8192) }).strict(),
   z.object({ type: z.literal('theme'), theme: z.enum(['system', 'light', 'dark']) }).strict(),
   z.object({ type: z.literal('dismiss-notice') }).strict(),
-  ...(['local.detect', 'local.cancel', 'local.start', 'local.stop', 'local.restart', 'local.check-update', 'local.open-data-directory'] as const).map(type => z.object({ type: z.literal(type) }).strict()),
+  ...(['local.detect', 'local.cancel', 'local.start', 'local.stop', 'local.restart', 'local.check-update', 'local.open-data-directory', 'local.copy-data-directory', 'local.migrate-home', 'desktop.show', 'desktop.quit', 'desktop.check-tray'] as const).map(type => z.object({ type: z.literal(type) }).strict()),
+  z.object({ type: z.literal('desktop.close-behavior'), value: z.enum(['tray', 'minimize', 'quit']) }).strict(),
+  z.object({ type: z.literal('local.configure-home'), selection: homeSelectionSchema }).strict(),
   z.object({ type: z.literal('local.install'), version: z.string().min(1).max(100) }).strict(),
   z.object({ type: z.literal('local.use-existing'), cliPath: z.string().min(1).max(4096), nodePath: z.string().min(1).max(4096) }).strict(),
 ])
 
-interface Runtime {
-  server: Server
-  view: WebContentsView
-  status: ConnectionStatus
-  error?: string
-  responseCode: number
-}
-
 class Switcher {
   private window: BrowserWindow
   private overlayView: WebContentsView
-  private runtimes = new Map<string, Runtime>()
+  private runtimes: ViewManager
   private configuredSessions = new Set<string>()
   private activeId: string | null = null
   private overlay: Overlay = null
@@ -53,17 +50,21 @@ class Switcher {
   private queue: Promise<unknown> = Promise.resolve()
   private closed = false
   private local: LocalRuntimeManager
-  private closing = false
+  private tray: TrayController
+  private lifecycle: WindowLifecycle
 
-  constructor(private store: SettingsStore) {
+  constructor(private store: SettingsStore, finishQuit: () => void) {
     nativeTheme.themeSource = store.snapshot.theme
     const preload = path.join(__dirname, 'preload.cjs')
     this.window = new BrowserWindow({
       width: 1240, height: 850, minWidth: 640, minHeight: 500,
       title: 'DSH Switcher', backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1b1c' : '#f5f7fa',
-      icon: app.isPackaged ? path.join(process.resourcesPath, 'icon.png') : path.join(__dirname, '../../build/dsh-official.png'),
+      icon: app.isPackaged ? path.join(process.resourcesPath, 'icon.png') : path.join(__dirname, '../../build/dsh-windows.png'),
       autoHideMenuBar: true, show: false,
       webPreferences: { preload, sandbox: true, contextIsolation: true, nodeIntegration: false },
+    })
+    this.runtimes = new ViewManager(view => {
+      if (this.attached === view) { this.window.contentView.removeChildView(view); this.attached = null }
     })
     this.overlayView = new WebContentsView({
       webPreferences: { preload, sandbox: true, contextIsolation: true, nodeIntegration: false },
@@ -81,11 +82,31 @@ class Switcher {
         const ses = this.configureSession(server)
         await authenticateSession(url, launchUrl, (request, options) => readAuthenticationHeaders(ses, request, options), signal)
         signal.throwIfAborted()
-        if (this.closed) throw new Error('客户端已关闭')
-        this.open(server)
+        if (this.closed || this.lifecycle.isQuitting) throw new Error('客户端已关闭')
+        if (this.activeId === LOCAL_SERVER_ID) this.open(server)
         if (this.activeId === LOCAL_SERVER_ID && this.overlay?.kind === 'local') this.overlay = null
         this.publish()
       },
+    })
+    this.tray = new TrayController(app.isPackaged ? path.join(process.resourcesPath, 'icon.png') : path.join(__dirname, '../../build/dsh-windows.png'), {
+      show: () => this.show(), quit: () => app.quit(), changed: () => this.publish(),
+      lost: () => {
+        if (!this.window.isVisible()) { this.show(); this.notice = '系统托盘服务已不可用，窗口已恢复'; this.publish() }
+      },
+      run: command => {
+        this.show()
+        void this.dispatch(command).then(result => { if (!result.ok) { this.notice = result.error; this.publish() } })
+      },
+    })
+    this.lifecycle = new WindowLifecycle({
+      behavior: () => this.store.snapshot.desktop.closeBehavior,
+      tray: () => this.tray.check(),
+      hide: () => this.window.hide(),
+      minimize: () => { this.window.show(); this.window.minimize() },
+      show: () => { if (this.window.isMinimized()) this.window.restore(); this.window.show(); this.window.focus() },
+      notice: message => { this.notice = message; this.publish() },
+      cleanup: async () => { await Promise.all([this.local.dispose(), this.queue]); this.dispose() },
+      exit: finishQuit,
     })
     for (const contents of [this.window.webContents, this.overlayView.webContents]) {
       contents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -97,18 +118,12 @@ class Switcher {
     this.window.on('close', event => {
       if (this.closed) return
       event.preventDefault()
-      if (this.closing) return
-      this.closing = true
-      void this.local.dispose().then(() => {
-        this.window.destroy()
-      }).catch(() => {
-        this.closing = false
-        this.notice = '本机进程清理失败，请检查日志后重试退出'
-        this.publish()
-      })
+      void this.lifecycle.closeWindow().catch(() => this.reportQuitFailure())
     })
+    this.window.on('session-end', () => { this.requestQuit() })
+    this.window.on('query-session-end', event => { event.preventDefault(); this.requestQuit() })
     this.window.on('closed', () => this.dispose())
-    this.window.once('ready-to-show', () => this.window.show())
+    this.window.once('ready-to-show', () => { if (!this.lifecycle.isQuitting) this.window.show() })
     nativeTheme.on('updated', this.onTheme)
 
     ipcMain.handle('switcher:state', event => {
@@ -119,27 +134,38 @@ class Switcher {
       this.authorize(event)
       const parsed = commands.safeParse(value)
       if (!parsed.success) return Promise.resolve({ ok: false, error: '操作参数无效' })
-      const command = parsed.data as Command
-      if (command.type.startsWith('local.')) {
-        return this.localCommand(command as LocalCommand).then(() => ({ ok: true }), error => ({ ok: false, error: error instanceof Error ? error.message : '本机操作失败' }))
-      }
-      const operation = this.queue.then(async (): Promise<CommandResult> => {
-        try { await this.command(command); return { ok: true } }
-        catch (error) { return { ok: false, error: error instanceof Error ? error.message : '操作失败，请重试' } }
-      })
-      this.queue = operation
-      return operation
+      return this.dispatch(parsed.data as Command)
     })
   }
+
+  private dispatch(command: Command): Promise<CommandResult> {
+    if (this.lifecycle.isQuitting || this.closed) return Promise.resolve({ ok: false, error: '客户端正在退出' })
+    if (command.type === 'desktop.quit') { setImmediate(() => app.quit()); return Promise.resolve({ ok: true }) }
+    if (command.type === 'desktop.show') { this.show(); return Promise.resolve({ ok: true }) }
+    if (command.type.startsWith('local.')) {
+      return this.localCommand(command as LocalCommand).then(() => ({ ok: true }), error => ({ ok: false, error: error instanceof Error ? error.message : '本机操作失败' }))
+    }
+    const operation = this.queue.then(async (): Promise<CommandResult> => {
+      try { await this.command(command); return { ok: true } }
+      catch (error) { return { ok: false, error: error instanceof Error ? error.message : '操作失败，请重试' } }
+    })
+    this.queue = operation
+    return operation
+  }
+  show(): void { this.lifecycle.show() }
+  requestQuit(): void { void this.lifecycle.requestQuit().catch(() => this.reportQuitFailure()) }
+  private reportQuitFailure(): void { this.notice = '本机进程清理失败，请检查日志后重试退出'; this.publish() }
 
   async start(): Promise<void> {
     await Promise.all([this.loadShell(this.window.webContents), this.loadShell(this.overlayView.webContents, true)])
     await this.local.initialize()
+    if (this.lifecycle.isQuitting || this.closed) return
     const settings = this.store.snapshot
-    this.activeId = settings.defaultId ?? settings.servers[0]?.id ?? null
+    this.setActive(settings.defaultId ?? settings.servers[0]?.id ?? null)
     if (this.activeId === LOCAL_SERVER_ID) this.selectLocal()
     else if (this.activeId) this.open(this.requireServer(this.activeId))
     this.publish()
+    this.tray.start()
   }
 
   private loadShell(contents: Electron.WebContents, overlay = false): Promise<void> {
@@ -177,13 +203,14 @@ class Switcher {
         return { ...server, status: runtime?.status ?? 'idle', error: runtime?.error }
       }), ...(local.installation || this.activeId === LOCAL_SERVER_ID ? [{
         id: LOCAL_SERVER_ID, name: '本机 DSH', url: this.local.url ?? '', local: true,
-        status: (local.process === 'running' ? this.runtimes.get(LOCAL_SERVER_ID)?.status ?? 'loading' : local.process === 'starting' ? 'loading' : local.process === 'failed' ? 'offline' : 'idle') as ConnectionStatus,
+        status: (local.process === 'running' ? this.runtimes.get(LOCAL_SERVER_ID)?.status ?? 'idle' : local.process === 'starting' ? 'loading' : local.process === 'failed' ? 'offline' : 'idle') as ConnectionStatus,
         error: local.error ?? undefined,
       }] : [])],
       activeId: this.activeId, defaultId: settings.defaultId, theme: settings.theme,
       dark: nativeTheme.shouldUseDarkColors, overlay: this.overlay, notice: this.notice,
       preview: false, appVersion: app.getVersion(),
       local,
+      desktop: { closeBehavior: settings.desktop.closeBehavior, tray: this.tray.snapshot },
     }
   }
 
@@ -191,6 +218,7 @@ class Switcher {
     if (this.closed) return
     this.layout()
     const state = this.snapshot()
+    this.tray.update(state)
     for (const contents of [this.window.webContents, this.overlayView.webContents]) {
       if (!contents.isDestroyed()) contents.send('switcher:state-changed', state)
     }
@@ -249,9 +277,9 @@ class Switcher {
       case 'select': {
         if (command.id === LOCAL_SERVER_ID) { this.selectLocal(); break }
         const server = this.requireServer(command.id)
-        this.activeId = server.id
+        this.setActive(server.id)
         this.overlay = null
-        if (!this.runtimes.has(server.id)) this.open(server)
+        if (!this.runtimes.get(server.id)) this.open(server)
         break
       }
       case 'save': {
@@ -276,7 +304,7 @@ class Switcher {
         if (old && old.id !== id) this.closeRuntime(old.id)
         const runtime = this.runtimes.get(id)
         if (runtime) runtime.server = record
-        this.activeId = id
+        this.setActive(id)
         this.overlay = null
         if (!runtime || parsed.launchUrl !== parsed.baseUrl || runtime.status !== 'ready') this.open(record)
         break
@@ -295,9 +323,9 @@ class Switcher {
         this.closeRuntime(command.id)
         this.overlay = null
         if (this.activeId === command.id) {
-          this.activeId = next.defaultId ?? next.servers[0]?.id ?? null
+          this.setActive(next.defaultId ?? next.servers[0]?.id ?? null)
           if (this.activeId === LOCAL_SERVER_ID) this.selectLocal()
-          else if (this.activeId && !this.runtimes.has(this.activeId)) this.open(this.requireServer(this.activeId))
+          else if (this.activeId && !this.runtimes.get(this.activeId)) this.open(this.requireServer(this.activeId))
         }
         break
       }
@@ -306,7 +334,7 @@ class Switcher {
         const url = loginUrlFor(server.url, command.url)
         const ses = this.configureSession(server)
         await authenticateSession(server.url, url, (request, options) => readAuthenticationHeaders(ses, request, options))
-        this.activeId = server.id
+        this.setActive(server.id)
         this.overlay = null
         this.open(server)
         break
@@ -323,29 +351,41 @@ class Switcher {
         nativeTheme.themeSource = command.theme
         break
       case 'dismiss-notice': this.notice = null; break
+      case 'desktop.close-behavior':
+        await this.store.update(settings => ({ ...settings, desktop: { closeBehavior: command.value } }))
+        break
+      case 'desktop.check-tray': await this.tray.check(); break
     }
     this.publish()
   }
 
+  private setActive(id: string | null): void {
+    this.runtimes.select(id)
+    this.activeId = id
+  }
+
   private selectLocal(): void {
-    this.activeId = LOCAL_SERVER_ID
-    if (!this.local.snapshot.installation) this.overlay = { kind: 'local' }
+    this.setActive(LOCAL_SERVER_ID)
+    if (!this.local.snapshot.installation || this.local.snapshot.home.migrationPending) this.overlay = { kind: 'local' }
     else {
       this.overlay = null
-      this.local.command({ type: 'local.start' })
+      if (this.local.snapshot.process === 'running') {
+        if (!this.runtimes.get(LOCAL_SERVER_ID)) this.open(this.requireServer(LOCAL_SERVER_ID))
+      } else this.local.command({ type: 'local.start' })
     }
     this.publish()
   }
 
   private async localCommand(command: LocalCommand): Promise<void> {
     if (command.type === 'local.open-data-directory') {
-      await mkdir(this.local.paths.home, { recursive: true })
-      if (await shell.openPath(this.local.paths.home)) throw new Error('无法打开本机 DSH 数据目录')
+      await mkdir(this.local.home.directory, { recursive: true })
+      if (await shell.openPath(this.local.home.directory)) throw new Error('无法打开本机 DSH 数据目录')
       return
     }
+    if (command.type === 'local.copy-data-directory') { clipboard.writeText(this.local.home.directory); return }
     this.local.command(command)
     if (['local.install', 'local.use-existing', 'local.start', 'local.restart'].includes(command.type)) {
-      this.activeId = LOCAL_SERVER_ID
+      this.setActive(LOCAL_SERVER_ID)
       if (!this.store.snapshot.defaultId) await this.store.update(settings => ({ ...settings, defaultId: LOCAL_SERVER_ID }))
     }
     this.publish()
@@ -385,6 +425,7 @@ class Switcher {
   }
 
   private open(server: Server): void {
+    if (this.activeId !== server.id || this.lifecycle.isQuitting || this.closed) return
     let runtime = this.runtimes.get(server.id)
     if (!runtime) {
       const view = new WebContentsView({ webPreferences: {
@@ -392,7 +433,7 @@ class Switcher {
         nodeIntegration: false, webSecurity: true,
       } })
       runtime = { view, server, status: 'idle', responseCode: 0 }
-      this.runtimes.set(server.id, runtime)
+      this.runtimes.set(runtime)
       const owned = runtime
       const update = (status: ConnectionStatus, error?: string): void => {
         if (this.closed || this.runtimes.get(server.id) !== owned) return
@@ -405,6 +446,7 @@ class Switcher {
       })
       view.webContents.on('did-navigate', (_event, _url, code) => { owned.responseCode = code })
       view.webContents.on('did-finish-load', () => {
+        if (!this.runtimes.owns(owned) || this.closed) return
         const code = owned.responseCode
         if (code === 401) update('auth-required')
         else if (code === 403) update('forbidden', '服务器拒绝了访问，请检查 DSH 的 trusted-host 配置')
@@ -439,25 +481,19 @@ class Switcher {
   }
 
   private closeRuntime(id: string): void {
-    const runtime = this.runtimes.get(id)
-    if (!runtime) return
-    if (this.attached === runtime.view) {
-      this.window.contentView.removeChildView(runtime.view)
-      this.attached = null
-    }
-    this.runtimes.delete(id)
-    runtime.view.webContents.close()
+    this.runtimes.close(id)
   }
 
   private onTheme = (): void => { this.publish() }
 
   private dispose(): void {
+    if (this.closed) return
     this.closed = true
+    this.tray.dispose()
     nativeTheme.off('updated', this.onTheme)
     ipcMain.removeHandler('switcher:state')
     ipcMain.removeHandler('switcher:command')
-    for (const runtime of this.runtimes.values()) runtime.view.webContents.close()
-    this.runtimes.clear()
+    this.runtimes.close()
     this.overlayView.webContents.close()
   }
 }
@@ -466,29 +502,33 @@ if (process.env.SWITCHER_USER_DATA) app.setPath('userData', path.resolve(process
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
   let controller: Switcher | undefined
-  let quitting = false
-  app.on('before-quit', () => { quitting = true })
+  let allowQuit = false
+  app.on('before-quit', event => {
+    if (allowQuit || !controller) return
+    event.preventDefault()
+    controller.requestQuit()
+  })
   app.on('second-instance', () => {
-    const window = BrowserWindow.getAllWindows()[0]
-    if (window?.isMinimized()) window.restore()
-    window?.show()
-    window?.focus()
+    controller?.show()
   })
   app.whenReady().then(async () => {
     const store = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'))
     await store.load()
-    const create = async (): Promise<void> => { controller = new Switcher(store); await controller.start() }
+    controller = new Switcher(store, () => { allowQuit = true; app.quit() })
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
+      ...(process.platform !== 'darwin' ? [{ label: '应用', submenu: [{ label: '显示窗口', click: () => controller?.show() }, { type: 'separator' as const }, { label: '退出', role: 'quit' as const }] }] : []),
       { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
       { label: '视图', submenu: [{ role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
       { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'close' }] },
     ]))
-    await create()
-    app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) void create() })
+    await controller.start()
+    app.on('activate', () => controller?.show())
+    // Electron's shutdown typings omit the documented event argument.
+    powerMonitor.on('shutdown', (event?: { preventDefault(): void }) => { event?.preventDefault(); app.quit() })
   }).catch(error => {
     dialog.showErrorBox('DSH Switcher 启动失败', error instanceof Error ? error.message : '无法加载客户端配置')
     app.quit()
   })
-  app.on('window-all-closed', () => { if (process.platform !== 'darwin' || quitting) app.quit() })
+  app.on('window-all-closed', () => { app.quit() })
 }

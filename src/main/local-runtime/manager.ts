@@ -1,12 +1,15 @@
 import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import semver from 'semver'
+import path from 'node:path'
 import type { LocalAction, LocalCommand, LocalRuntimeState } from '../../shared/types'
 import type { SettingsStore } from '../settings'
 import { RuntimeDownloads } from './download'
 import { RuntimeInstaller } from './installer'
 import { discoverDsh, inspectDsh } from './discovery'
-import { runtimePaths } from './platform'
-import { redactLog, startDsh } from './process'
+import { runtimePaths, runtimeEnvironment } from './platform'
+import { redactLog, startDsh, runProgram } from './process'
+import { directoryHasData, officialDshHome, resolveDshHome } from '../dsh-home'
+import { migrateDshHome } from '../data-migration'
 
 type RunningDsh = Awaited<ReturnType<typeof startDsh>>
 interface Job { kind: LocalAction; controller: AbortController; promise: Promise<void> }
@@ -22,7 +25,7 @@ export class LocalRuntimeManager {
   private disposed = false
   private disposing?: Promise<void>
   private logQueue: Promise<void> = Promise.resolve()
-  constructor(private store: SettingsStore, userData: string, private supervisor: string, private callbacks: {
+  constructor(private store: SettingsStore, private userData: string, private supervisor: string, private callbacks: {
     changed: () => void
     ready: (url: string, launchUrl: string, signal: AbortSignal) => Promise<void>
     stopped: () => void
@@ -31,14 +34,28 @@ export class LocalRuntimeManager {
     this.paths = runtimePaths(userData)
     this.downloads = new RuntimeDownloads(callbacks.resolveProxy)
     this.installer = new RuntimeInstaller(this.paths, this.downloads, supervisor)
-    this.state = { process: 'stopped', operation: null, candidates: [], latestVersion: null, error: null, logs: [], dataDirectory: this.paths.home, runtimeDirectory: this.paths.root }
+    this.state = { process: 'stopped', operation: null, candidates: [], latestVersion: null, error: null, logs: [], dataDirectory: this.home.directory, runtimeDirectory: this.paths.root,
+      home: { selection: store.snapshot.local.home, profile: this.home.profile, officialDirectory: officialDshHome(), legacyDirectory: this.paths.home, migrationPending: store.snapshot.local.migrationPending, legacyHasData: false, targetHasData: false, backupDirectory: store.snapshot.local.backupDirectory },
+    }
   }
-  get snapshot(): LocalRuntimeState { return structuredClone({ ...this.state, installation: this.store.snapshot.local.installation }) }
+  get home() { return resolveDshHome(this.store.snapshot.local.home, this.userData) }
+  get snapshot(): LocalRuntimeState {
+    const local = this.store.snapshot.local
+    return structuredClone({ ...this.state, dataDirectory: this.home.directory, home: { ...this.state.home, selection: local.home, profile: this.home.profile, migrationPending: local.migrationPending, backupDirectory: local.backupDirectory }, installation: local.installation })
+  }
   get url(): string | null { return this.running?.url ?? null }
 
   async initialize(): Promise<void> {
     const history = await readFile(this.paths.log, 'utf8').catch(() => '')
     this.state.logs = history.split('\n').filter(Boolean).slice(-100).map(redactLog)
+    await this.refreshHome()
+  }
+  private async refreshHome(): Promise<void> {
+    const results = await Promise.allSettled([directoryHasData(this.paths.home), directoryHasData(officialDshHome())])
+    const hasData = (result: PromiseSettledResult<boolean>) => result.status === 'fulfilled' ? result.value : true
+    this.state.home = { ...this.state.home, legacyHasData: hasData(results[0]), targetHasData: hasData(results[1]) }
+    if (results.some(result => result.status === 'rejected')) this.state.error = '无法检查 DSH 数据目录，请在本机管理中检查路径和访问权限'
+    this.changed()
   }
   private changed(): void { if (!this.disposed) this.callbacks.changed() }
   private log(message: string): void {
@@ -102,6 +119,7 @@ export class LocalRuntimeManager {
       case 'local.install':
       case 'local.use-existing':
         this.begin(command.type === 'local.install' ? 'install' : 'use-existing', async signal => {
+          if (this.store.snapshot.local.migrationPending) throw new Error('请先选择使用官方数据目录、迁移旧数据，或继续旧环境')
           const existing = command.type === 'local.use-existing' ? await inspectDsh(command.cliPath, command.nodePath, signal) : undefined
           const metadata = await this.installer.metadata(command.type === 'local.install' ? command.version : existing!.version, signal)
           const previous = this.store.snapshot.local.installation
@@ -113,7 +131,7 @@ export class LocalRuntimeManager {
           this.progress('停止旧进程并启用已验证的运行环境')
           await this.stop()
           signal.throwIfAborted()
-          await this.store.update(settings => ({ ...settings, local: { installation } }))
+          await this.store.update(settings => ({ ...settings, local: { ...settings.local, installation } }))
           this.log(`已选择 ${installation.source === 'managed' ? '托管' : '已有'} DSH ${installation.version}`)
           await this.start(signal)
         })
@@ -121,20 +139,63 @@ export class LocalRuntimeManager {
       case 'local.start': this.begin('start', signal => this.start(signal)); break
       case 'local.stop': this.begin('stop', async () => { this.progress('停止本机 DSH'); await this.stop() }); break
       case 'local.restart': this.begin('restart', async signal => { await this.stop(); signal.throwIfAborted(); await this.start(signal) }); break
-      case 'local.open-data-directory': break
+      case 'local.configure-home':
+        this.begin('configure-home', async signal => {
+          const target = resolveDshHome(command.selection, this.userData)
+          const programRoot = path.resolve(this.paths.root)
+          if (target.directory === programRoot || target.directory.startsWith(`${programRoot}${path.sep}`)) throw new Error('数据目录不能放在程序运行环境目录内')
+          await directoryHasData(target.directory)
+          this.progress('停止本机 DSH 并切换数据目录')
+          await this.stop()
+          signal.throwIfAborted()
+          await this.store.update(settings => ({ ...settings, local: { ...settings.local, home: command.selection, migrationPending: false } }))
+          await this.refreshHome()
+          this.log(`数据目录已选择：${target.directory}；profile：${target.profile}`)
+          if (this.store.snapshot.local.installation) await this.start(signal)
+        })
+        break
+      case 'local.migrate-home':
+        this.begin('migrate-home', async signal => {
+          const installation = this.store.snapshot.local.installation
+          if (!installation) throw new Error('需要已有 DSH 运行环境才能验证迁移，请先选择继续旧环境并完成安装')
+          await this.stop()
+          const result = await migrateDshHome({
+            source: this.paths.home, destination: officialDshHome(), backups: path.join(this.userData, 'backups'), signal,
+            progress: stage => this.progress(stage),
+            validate: async stage => {
+              const env = runtimeEnvironment(installation.nodePath, [path.dirname(installation.pnpmPath)])
+              env.DSH_HOME = stage
+              const profileDir = path.join(stage, 'profiles/web')
+              const manifest = JSON.parse(await readFile(path.join(profileDir, 'package.json'), 'utf8'))
+              if (manifest.dependencies && Object.keys(manifest.dependencies).length) {
+                await runProgram(installation.nodePath, [path.join(installation.root, 'node_modules/pnpm/bin/pnpm.mjs'), 'install', '--dir', profileDir], { env, cwd: stage, signal, timeoutMs: 10 * 60_000, supervisor: this.supervisor })
+              }
+              await runProgram(installation.nodePath, [installation.cliPath, '--profile', 'web', '--dump-config'], { env, cwd: stage, signal, timeoutMs: 60_000, supervisor: this.supervisor })
+            },
+          })
+          await this.store.update(settings => ({ ...settings, local: { ...settings.local, home: { mode: 'official' }, migrationPending: false, backupDirectory: result.backupDirectory } }))
+          await this.refreshHome()
+          this.log(`数据迁移完成，旧环境和备份保留：${result.backupDirectory}`)
+          await this.start(signal)
+        })
+        break
+      case 'local.open-data-directory':
+      case 'local.copy-data-directory': break
     }
   }
   private async start(signal: AbortSignal): Promise<void> {
     if (this.running && this.state.process === 'running') return
+    if (this.store.snapshot.local.migrationPending) throw new Error('请先确认旧环境的数据目录迁移选项')
     const installation = this.store.snapshot.local.installation
     if (!installation) throw new Error('请先安装或选择本机 DSH')
     this.progress('验证本机 DSH')
     await inspectDsh(installation.cliPath, installation.nodePath, signal)
     this.state.process = 'starting'
     this.progress('启动本机 DSH，等待服务就绪')
-    this.log(`启动 DSH ${installation.version}（独立 profile，系统分配端口）`)
+    const home = this.home
+    this.log(`启动 DSH ${installation.version}（${home.profile} profile，系统分配端口）`)
     try {
-      const running = await startDsh(installation, this.paths.home, signal, line => this.log(line), this.supervisor)
+      const running = await startDsh(installation, home.directory, signal, line => this.log(line), this.supervisor, home.profile)
       this.running = running
       void running.owner.closed.then(() => {
         if (this.running !== running) return
@@ -149,6 +210,7 @@ export class LocalRuntimeManager {
       signal.throwIfAborted()
       if (this.running !== running || running.owner.child.exitCode !== null) throw new Error('DSH 在登录时退出')
       this.state.process = 'running'
+      await this.refreshHome()
       this.log(`本机 DSH 已就绪：${running.url}`)
     } catch (error) {
       await this.stop()

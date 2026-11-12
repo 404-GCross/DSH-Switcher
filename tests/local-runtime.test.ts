@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { platformTarget, nodeFiles, runtimeEnvironment } from '../src/main/local-runtime/platform'
-import { parseReadyLine, redactLog, runProgram, OwnedProcess } from '../src/main/local-runtime/process'
+import { parseReadyLine, redactLog, runProgram, OwnedProcess, startDsh } from '../src/main/local-runtime/process'
+import type { LocalInstallation } from '../src/shared/types'
 import { acquireInstallLock, selectNodeRelease } from '../src/main/local-runtime/installer'
 
 test('platform mapping chooses official archives and platform-specific npm entrypoints', () => {
@@ -14,6 +15,17 @@ test('platform mapping chooses official archives and platform-specific npm entry
   assert.throws(() => platformTarget('freebsd', 'x64'))
   assert.match(nodeFiles('/runtime', 'win32').node, /node\.exe$/)
   assert.match(nodeFiles('/runtime', 'linux').npm, /npm-cli\.js$/)
+})
+
+test('an incomplete legacy profile is not replaced with a fresh template', async () => {
+  const home = await mkdtemp(path.join(process.env.SWITCHER_TEST_TMP ?? os.tmpdir(), 'switcher-incomplete-'))
+  try {
+    const profile = path.join(home, 'profiles/switcher')
+    await mkdir(profile, { recursive: true })
+    await writeFile(path.join(profile, 'cordis.patch.yml'), 'preserve')
+    await assert.rejects(startDsh({} as LocalInstallation, home, new AbortController().signal, () => {}, '', 'switcher'), /已保留现有数据/)
+    assert.equal(await readFile(path.join(profile, 'cordis.patch.yml'), 'utf8'), 'preserve')
+  } finally { await rm(home, { recursive: true, force: true }) }
 })
 
 test('Node selection keeps the compatible tested LTS major and respects newer DSH requirements', () => {
