@@ -25,6 +25,9 @@ if grep -q 'not found' /tmp/switcher-libraries; then
   cat /tmp/switcher-libraries
   exit 1
 fi
+# Resolve lazy symbols too: an OSS compatibility provider can satisfy an
+# unversioned libasound2 dependency but cannot run Chromium's ALSA backend.
+runuser -u nobody -- env LD_BIND_NOW=1 ELECTRON_RUN_AS_NODE=1 /usr/bin/dsh-switcher -e 'console.log("DEB Electron runtime:", process.versions.electron)'
 apt-get install -y --no-install-recommends desktop-file-utils xvfb xauth dbus-x11 fonts-dejavu-core passwd
 desktop-file-validate /usr/share/applications/dsh-switcher.desktop
 bash /workspace/scripts/ci/run-linux-desktop.sh /usr/bin/dsh-switcher

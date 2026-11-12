@@ -16,7 +16,8 @@ runuser -u switcher-test -- env \
   SWITCHER_TEST_EXECUTABLE="$executable" \
   SWITCHER_EXPECT_ARCH=x64 \
   SWITCHER_TEST_NO_SANDBOX=1 \
-  dbus-run-session -- xvfb-run -a /node/bin/node /workspace/scripts/test-desktop.mjs
+  DEBUG=pw:browser \
+  dbus-run-session -- xvfb-run -a /node/bin/node /workspace/scripts/test-desktop.mjs 2>&1 | tee /diagnostics/desktop.log
 
 # Docker's namespace restrictions require the test-only flag above. Native host
 # tests run without it; neither the package nor the AppRun launcher sets it.
