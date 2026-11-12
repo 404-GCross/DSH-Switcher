@@ -1,4 +1,4 @@
-import { app, BrowserWindow, WebContentsView, ipcMain, session, shell, nativeTheme, dialog, Menu, clipboard, powerMonitor } from 'electron'
+import { app, BrowserWindow, WebContentsView, ipcMain, session, shell, nativeTheme, dialog, Menu, clipboard, powerMonitor, Notification } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
 import path from 'node:path'
 import { mkdir } from 'node:fs/promises'
@@ -7,7 +7,7 @@ import { z } from 'zod'
 import type { AppState, Command, CommandResult, ConnectionStatus, Overlay, Server } from '../shared/types'
 import { LOCAL_SERVER_ID } from '../shared/types'
 import type { LocalCommand } from '../shared/types'
-import { SettingsStore, homeSelectionSchema } from './settings'
+import { SettingsStore, homeSelectionSchema, paletteShortcutSchema, updatePreferencesSchema, notificationPreferencesSchema } from './settings'
 import { isWebUrl, isWithinServer, loginUrlFor, parseServerUrl } from './server-url'
 import { authenticateSession } from './authenticate'
 import { readAuthenticationHeaders } from './auth-transport'
@@ -15,10 +15,18 @@ import { LocalRuntimeManager } from './local-runtime/manager'
 import { ViewManager } from './view-manager'
 import { TrayController } from './tray-controller'
 import { WindowLifecycle } from './window-lifecycle'
+import { DevToolsController } from './devtools'
+import { clientActions, matchesPaletteShortcut } from '../shared/actions'
+import { ClientUpdater } from './client-updater'
+import { NotificationCenter } from './notification-center'
+import { RuntimeDownloads } from './local-runtime/download'
+import WebSocket from 'ws'
+import { HttpsProxyAgent } from 'https-proxy-agent'
+import { SocksProxyAgent } from 'socks-proxy-agent'
 
 const FOOTER_HEIGHT = 44
 const overlaySchema = z.union([
-  z.object({ kind: z.enum(['instances', 'add', 'about', 'local', 'settings']) }).strict(),
+  z.object({ kind: z.enum(['instances', 'add', 'about', 'local', 'settings', 'palette', 'updates', 'notifications']) }).strict(),
   z.object({ kind: z.enum(['edit', 'login', 'remove']), id: z.uuid() }).strict(),
   z.null(),
 ])
@@ -35,6 +43,14 @@ const commands = z.discriminatedUnion('type', [
   z.object({ type: z.literal('local.configure-home'), selection: homeSelectionSchema }).strict(),
   z.object({ type: z.literal('local.install'), version: z.string().min(1).max(100) }).strict(),
   z.object({ type: z.literal('local.use-existing'), cliPath: z.string().min(1).max(4096), nodePath: z.string().min(1).max(4096) }).strict(),
+  z.object({ type: z.literal('desktop.devtools'), target: z.enum(['page', 'shell']) }).strict(),
+  z.object({ type: z.literal('desktop.palette-shortcut'), value: paletteShortcutSchema }).strict(),
+  z.object({ type: z.literal('action'), id: z.string().min(1).max(100) }).strict(),
+  ...(['update.check', 'update.download', 'update.cancel', 'update.open', 'notifications.clear', 'notifications.retry'] as const).map(type => z.object({ type: z.literal(type) }).strict()),
+  z.object({ type: z.literal('update.configure'), value: updatePreferencesSchema }).strict(),
+  z.object({ type: z.literal('notifications.configure'), value: notificationPreferencesSchema }).strict(),
+  z.object({ type: z.literal('notifications.read'), id: z.uuid().optional() }).strict(),
+  ...(['notifications.open', 'notifications.copy-session'] as const).map(type => z.object({ type: z.literal(type), id: z.uuid() }).strict()),
 ])
 
 class Switcher {
@@ -52,6 +68,10 @@ class Switcher {
   private local: LocalRuntimeManager
   private tray: TrayController
   private lifecycle: WindowLifecycle
+  private devtools: DevToolsController
+  private updater: ClientUpdater
+  private notifications: NotificationCenter
+  private nativeNotifications = new Set<Notification>()
 
   constructor(private store: SettingsStore, finishQuit: () => void) {
     nativeTheme.themeSource = store.snapshot.theme
@@ -63,7 +83,9 @@ class Switcher {
       autoHideMenuBar: true, show: false,
       webPreferences: { preload, sandbox: true, contextIsolation: true, nodeIntegration: false },
     })
+    this.devtools = new DevToolsController(this.window, () => this.publish())
     this.runtimes = new ViewManager(view => {
+      if (!view.webContents.isDestroyed()) view.webContents.closeDevTools()
       if (this.attached === view) { this.window.contentView.removeChildView(view); this.attached = null }
     })
     this.overlayView = new WebContentsView({
@@ -76,7 +98,7 @@ class Switcher {
     this.local = new LocalRuntimeManager(store, app.getPath('userData'), supervisor, {
       changed: () => this.publish(),
       resolveProxy: url => session.defaultSession.resolveProxy(url),
-      stopped: () => this.closeRuntime(LOCAL_SERVER_ID),
+      stopped: () => { this.closeRuntime(LOCAL_SERVER_ID); this.syncNotifications() },
       ready: async (url, launchUrl, signal) => {
         const server = { id: LOCAL_SERVER_ID, name: '本机 DSH', url }
         const ses = this.configureSession(server)
@@ -85,7 +107,46 @@ class Switcher {
         if (this.closed || this.lifecycle.isQuitting) throw new Error('客户端已关闭')
         if (this.activeId === LOCAL_SERVER_ID) this.open(server)
         if (this.activeId === LOCAL_SERVER_ID && this.overlay?.kind === 'local') this.overlay = null
+        this.syncNotifications(true)
         this.publish()
+      },
+    })
+    this.updater = new ClientUpdater(store, app.getPath('userData'), app.getVersion(), {
+      changed: () => this.publish(), resolveProxy: url => session.defaultSession.resolveProxy(url), open: file => shell.openPath(file), reveal: file => shell.showItemInFolder(file),
+    })
+    this.notifications = new NotificationCenter(store, app.getPath('userData'), Notification.isSupported(), {
+      changed: () => this.publish(),
+      transport: server => {
+        const ses = this.configureSession(server)
+        return {
+          request: async (url, body, signal) => {
+            const response = await ses.fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body, signal, redirect: 'error' })
+            if (response.status !== 200) return { status: response.status, value: null }
+            const reader = response.body?.getReader()
+            if (!reader) throw new Error('Missing response')
+            const chunks: Uint8Array[] = []; let size = 0
+            try { for (;;) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.length; if (size > 8 * 1024 * 1024) throw new Error('Response too large'); chunks.push(chunk.value) } }
+            finally { await reader.cancel().catch(() => undefined) }
+            return { status: response.status, value: JSON.parse(Buffer.concat(chunks).toString('utf8')) }
+          },
+          socket: async url => {
+            const cookie = (await ses.cookies.get({ url: server.url })).map(item => `${item.name}=${item.value}`).join('; ')
+            const proxy = await new RuntimeDownloads(value => ses.resolveProxy(value)).proxyFor(server.url)
+            const agent = proxy ? proxy.startsWith('socks') ? new SocksProxyAgent(proxy) : new HttpsProxyAgent(proxy) : undefined
+            const socket = new WebSocket(url, { headers: { Cookie: cookie, Origin: new URL(server.url).origin }, agent, handshakeTimeout: 10000, maxPayload: 8 * 1024 * 1024, followRedirects: false })
+            socket.on('error', () => {}); socket.once('close', () => agent?.destroy())
+            return socket
+          },
+        }
+      },
+      notify: (item, silent) => {
+        const notification = new Notification({ title: `${item.serverName} · ${item.sessionTitle}`, body: item.text, silent })
+        this.nativeNotifications.add(notification)
+        if (this.nativeNotifications.size > 50) { const oldest = this.nativeNotifications.values().next().value!; this.nativeNotifications.delete(oldest); oldest.close() }
+        notification.once('click', () => { this.show(); void this.dispatch({ type: 'notifications.open', id: item.id }) })
+        notification.once('close', () => this.nativeNotifications.delete(notification))
+        notification.once('failed', () => this.nativeNotifications.delete(notification))
+        notification.show()
       },
     })
     this.tray = new TrayController(app.isPackaged ? path.join(process.resourcesPath, 'icon.png') : path.join(__dirname, '../../build/dsh-windows.png'), {
@@ -101,11 +162,11 @@ class Switcher {
     this.lifecycle = new WindowLifecycle({
       behavior: () => this.store.snapshot.desktop.closeBehavior,
       tray: () => this.tray.check(),
-      hide: () => this.window.hide(),
-      minimize: () => { this.window.show(); this.window.minimize() },
+      hide: () => { this.devtools.closeAll(); this.window.hide() },
+      minimize: () => { this.devtools.closeAll(); this.window.show(); this.window.minimize() },
       show: () => { if (this.window.isMinimized()) this.window.restore(); this.window.show(); this.window.focus() },
       notice: message => { this.notice = message; this.publish() },
-      cleanup: async () => { await Promise.all([this.local.dispose(), this.queue]); this.dispose() },
+      cleanup: async () => { await Promise.all([this.local.dispose(), this.queue, this.updater.dispose(), this.notifications.dispose()]); this.dispose() },
       exit: finishQuit,
     })
     for (const contents of [this.window.webContents, this.overlayView.webContents]) {
@@ -113,6 +174,7 @@ class Switcher {
       contents.on('will-navigate', event => event.preventDefault())
       contents.on('did-finish-load', () => this.publish())
       this.installShortcut(contents)
+      this.devtools.register(contents)
     }
     this.window.on('resize', () => this.layout())
     this.window.on('close', event => {
@@ -142,6 +204,12 @@ class Switcher {
     if (this.lifecycle.isQuitting || this.closed) return Promise.resolve({ ok: false, error: '客户端正在退出' })
     if (command.type === 'desktop.quit') { setImmediate(() => app.quit()); return Promise.resolve({ ok: true }) }
     if (command.type === 'desktop.show') { this.show(); return Promise.resolve({ ok: true }) }
+    if (command.type === 'action') {
+      const action = clientActions(this.snapshot()).find(item => item.id === command.id)
+      if (!action?.enabled) return Promise.resolve({ ok: false, error: '此操作当前不可用' })
+      if (this.overlay?.kind === 'palette') this.overlay = null
+      return this.dispatch(action.command)
+    }
     if (command.type.startsWith('local.')) {
       return this.localCommand(command as LocalCommand).then(() => ({ ok: true }), error => ({ ok: false, error: error instanceof Error ? error.message : '本机操作失败' }))
     }
@@ -153,12 +221,20 @@ class Switcher {
     return operation
   }
   show(): void { this.lifecycle.show() }
+  runAction(id: string): void { void this.dispatch({ type: 'action', id }).then(result => { if (!result.ok) { this.notice = result.error; this.publish() } }) }
+  togglePalette(): void { this.overlay = this.overlay?.kind === 'palette' ? null : { kind: 'palette' }; this.publish() }
+  private pageContents(): Electron.WebContents { return (this.activeId ? this.runtimes.get(this.activeId)?.view.webContents : undefined) ?? this.window.webContents }
+  private syncNotifications(retry = false): void {
+    const servers = [...this.store.snapshot.servers, ...(this.local.url ? [{ id: LOCAL_SERVER_ID, name: '本机 DSH', url: this.local.url }] : [])]
+    this.notifications.sync(servers, retry)
+  }
   requestQuit(): void { void this.lifecycle.requestQuit().catch(() => this.reportQuitFailure()) }
   private reportQuitFailure(): void { this.notice = '本机进程清理失败，请检查日志后重试退出'; this.publish() }
 
   async start(): Promise<void> {
     await Promise.all([this.loadShell(this.window.webContents), this.loadShell(this.overlayView.webContents, true)])
     await this.local.initialize()
+    await this.notifications.initialize()
     if (this.lifecycle.isQuitting || this.closed) return
     const settings = this.store.snapshot
     this.setActive(settings.defaultId ?? settings.servers[0]?.id ?? null)
@@ -166,6 +242,8 @@ class Switcher {
     else if (this.activeId) this.open(this.requireServer(this.activeId))
     this.publish()
     this.tray.start()
+    this.syncNotifications()
+    void this.updater.initialize(app.getPath('exe'))
   }
 
   private loadShell(contents: Electron.WebContents, overlay = false): Promise<void> {
@@ -186,6 +264,10 @@ class Switcher {
 
   private installShortcut(contents: Electron.WebContents): void {
     contents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown' || input.isAutoRepeat || input.isComposing || this.lifecycle.isQuitting) return
+      const devtools = input.key === 'F12' || input.key.toLowerCase() === 'i' && (process.platform === 'darwin' ? input.meta && input.alt && !input.control && !input.shift : input.control && input.shift && !input.meta && !input.alt)
+      if (devtools) { event.preventDefault(); this.devtools.toggle(this.pageContents()); return }
+      if (matchesPaletteShortcut(input, this.store.snapshot.desktop.paletteShortcut)) { event.preventDefault(); this.togglePalette(); return }
       if (input.type === 'keyDown' && (input.control || input.meta) && input.shift && input.key.toLowerCase() === 's') {
         event.preventDefault()
         this.overlay = this.overlay ? null : { kind: 'instances' }
@@ -210,7 +292,10 @@ class Switcher {
       dark: nativeTheme.shouldUseDarkColors, overlay: this.overlay, notice: this.notice,
       preview: false, appVersion: app.getVersion(),
       local,
-      desktop: { closeBehavior: settings.desktop.closeBehavior, tray: this.tray.snapshot },
+      desktop: { ...settings.desktop, tray: this.tray.snapshot, devToolsOpen: this.pageContents().isDevToolsOpened() },
+      recentServerIds: settings.recentServerIds,
+      updates: { ...settings.updates, ...this.updater.snapshot },
+      notifications: { ...settings.notifications, ...this.notifications.snapshot },
     }
   }
 
@@ -275,11 +360,12 @@ class Switcher {
         this.overlay = command.overlay
         break
       case 'select': {
-        if (command.id === LOCAL_SERVER_ID) { this.selectLocal(); break }
+        if (command.id === LOCAL_SERVER_ID) { this.selectLocal(); await this.remember(command.id); break }
         const server = this.requireServer(command.id)
         this.setActive(server.id)
         this.overlay = null
         if (!this.runtimes.get(server.id)) this.open(server)
+        await this.remember(server.id)
         break
       }
       case 'save': {
@@ -307,6 +393,8 @@ class Switcher {
         this.setActive(id)
         this.overlay = null
         if (!runtime || parsed.launchUrl !== parsed.baseUrl || runtime.status !== 'ready') this.open(record)
+        await this.remember(id)
+        this.syncNotifications(true)
         break
       }
       case 'default':
@@ -318,9 +406,10 @@ class Switcher {
         this.requireServer(command.id)
         const next = await this.store.update(settings => {
           const servers = settings.servers.filter(server => server.id !== command.id)
-          return { ...settings, servers, defaultId: settings.defaultId === command.id ? servers[0]?.id ?? null : settings.defaultId }
+          return { ...settings, servers, defaultId: settings.defaultId === command.id ? servers[0]?.id ?? null : settings.defaultId, recentServerIds: settings.recentServerIds.filter(id => id !== command.id), notifications: { ...settings.notifications, serverIds: settings.notifications.serverIds.filter(id => id !== command.id) } }
         })
         this.closeRuntime(command.id)
+        this.syncNotifications()
         this.overlay = null
         if (this.activeId === command.id) {
           this.setActive(next.defaultId ?? next.servers[0]?.id ?? null)
@@ -337,6 +426,7 @@ class Switcher {
         this.setActive(server.id)
         this.overlay = null
         this.open(server)
+        this.syncNotifications(true)
         break
       }
       case 'reload':
@@ -352,17 +442,46 @@ class Switcher {
         break
       case 'dismiss-notice': this.notice = null; break
       case 'desktop.close-behavior':
-        await this.store.update(settings => ({ ...settings, desktop: { closeBehavior: command.value } }))
+        await this.store.update(settings => ({ ...settings, desktop: { ...settings.desktop, closeBehavior: command.value } }))
         break
       case 'desktop.check-tray': await this.tray.check(); break
+      case 'desktop.devtools': this.devtools.toggle(command.target === 'page' ? this.pageContents() : this.overlay ? this.overlayView.webContents : this.window.webContents); break
+      case 'desktop.palette-shortcut': await this.store.update(settings => ({ ...settings, desktop: { ...settings.desktop, paletteShortcut: command.value } })); break
+      case 'update.configure': await this.updater.configure(command.value); break
+      case 'update.check': this.updater.check(); break
+      case 'update.download': this.updater.download(); break
+      case 'update.cancel': this.updater.cancel(); break
+      case 'update.open': await this.updater.open(); break
+      case 'notifications.configure':
+        if (command.value.serverIds.some(id => id !== LOCAL_SERVER_ID && !this.store.snapshot.servers.some(server => server.id === id))) throw new Error('通知服务器连接不存在')
+        await this.store.update(settings => ({ ...settings, notifications: { ...command.value, serverIds: [...new Set(command.value.serverIds)] } })); this.syncNotifications(); break
+      case 'notifications.retry': this.syncNotifications(true); break
+      case 'notifications.read': this.notifications.read(command.id); break
+      case 'notifications.clear': this.notifications.clear(); break
+      case 'notifications.copy-session': {
+        const item = this.notifications.find(command.id)
+        if (item) clipboard.writeText(item.sessionId)
+        break
+      }
+      case 'notifications.open': {
+        const item = this.notifications.find(command.id)
+        if (!item) throw new Error('通知已被清除')
+        this.show()
+        await this.command({ type: 'select', id: item.serverId })
+        this.notifications.read(item.id)
+        this.notice = `已打开 ${item.serverName}，请在 DSH 侧栏选择「${item.sessionTitle}」`
+        break
+      }
     }
     this.publish()
   }
 
   private setActive(id: string | null): void {
+    if (this.activeId !== id) this.devtools.closeAll()
     this.runtimes.select(id)
     this.activeId = id
   }
+  private remember(id: string): Promise<unknown> { return this.store.update(settings => ({ ...settings, recentServerIds: [id, ...settings.recentServerIds.filter(item => item !== id)].slice(0, 20) })) }
 
   private selectLocal(): void {
     this.setActive(LOCAL_SERVER_ID)
@@ -471,6 +590,7 @@ class Switcher {
         if (!isWithinServer(server.url, url)) { event.preventDefault(); update('offline', '页面重定向到了其他地址，请检查服务器配置') }
       })
       this.installShortcut(view.webContents)
+      this.devtools.register(view.webContents)
     }
     runtime.status = 'loading'
     runtime.error = undefined
@@ -489,6 +609,9 @@ class Switcher {
   private dispose(): void {
     if (this.closed) return
     this.closed = true
+    this.devtools.closeAll()
+    for (const notification of this.nativeNotifications) notification.close()
+    this.nativeNotifications.clear()
     this.tray.dispose()
     nativeTheme.off('updated', this.onTheme)
     ipcMain.removeHandler('switcher:state')
@@ -512,6 +635,7 @@ else {
     controller?.show()
   })
   app.whenReady().then(async () => {
+    if (process.platform === 'win32') app.setAppUserModelId('io.gcross.dsh-switcher')
     const store = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'))
     await store.load()
     controller = new Switcher(store, () => { allowQuit = true; app.quit() })
@@ -519,7 +643,8 @@ else {
       ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
       ...(process.platform !== 'darwin' ? [{ label: '应用', submenu: [{ label: '显示窗口', click: () => controller?.show() }, { type: 'separator' as const }, { label: '退出', role: 'quit' as const }] }] : []),
       { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-      { label: '视图', submenu: [{ role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
+      { label: '视图', submenu: [{ label: '快捷操作', click: () => controller?.togglePalette() }, { type: 'separator' }, { label: '网页开发者工具（F12）', click: () => controller?.runAction('devtools') }, { label: '客户端界面开发者工具', click: () => controller?.runAction('shell-devtools') }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
+      { label: '工具', submenu: [{ label: '客户端更新中心', click: () => controller?.runAction('updates') }, { label: '任务通知中心', click: () => controller?.runAction('notifications') }] },
       { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'close' }] },
     ]))
     await controller.start()

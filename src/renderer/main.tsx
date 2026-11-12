@@ -4,12 +4,16 @@ import {
   Layers, Monitor, ChevronUp, Plus, Star, ExternalLink, Pencil, Trash2,
   RefreshCw, Sun, Moon, Check, X, Search, Globe, ArrowUp, Folder,
   MessageSquare, PanelLeft, Puzzle, LoaderCircle, CircleAlert, KeyRound,
-  Settings2, ArrowRight, Info,
+  Settings2, ArrowRight, Info, CodeXml, Bell, Command as CommandIcon,
 } from 'lucide-react'
 import type { AppState, Command, Connection, DesktopBridge, Overlay, Theme } from '../shared/types'
 import { LOCAL_SERVER_ID } from '../shared/types'
 import { LocalRuntimePanel, localStatus } from './components/LocalRuntimePanel'
 import { DesktopSettings } from './components/DesktopSettings'
+import { CommandPalette } from './components/CommandPalette'
+import { UpdateCenter } from './components/UpdateCenter'
+import { NotificationCenterPanel } from './components/NotificationCenter'
+import { matchesPaletteShortcut } from '../shared/actions'
 import { createPreviewBridge } from './preview'
 import './styles.css'
 import appIcon from '../../build/dsh-windows.png'
@@ -19,7 +23,7 @@ const overlaySurface = new URLSearchParams(location.search).get('surface') === '
 document.documentElement.classList.toggle('overlay-surface', overlaySurface)
 
 function IconButton({ label, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
-  return <button {...props} className={`icon-button ${props.className ?? ''}`} type="button" aria-label={label} title={label}>{children}</button>
+  return <button {...props} className={`icon-button ${props.className ?? ''}`} type="button" aria-label={label} title={props.title ?? label}>{children}</button>
 }
 
 const statusLabels: Record<Connection['status'], string> = {
@@ -57,13 +61,16 @@ function App() {
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && state?.overlay) { event.preventDefault(); void run({ type: 'overlay', overlay: null }) }
+      if (!window.desktop && state && matchesPaletteShortcut({ key: event.key, control: event.ctrlKey, meta: event.metaKey, alt: event.altKey, shift: event.shiftKey }, state.desktop.paletteShortcut, navigator.platform.includes('Mac') ? 'darwin' : 'linux')) {
+        event.preventDefault(); void run({ type: 'overlay', overlay: state.overlay?.kind === 'palette' ? null : { kind: 'palette' } })
+      }
       if (!window.desktop && (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 's') {
         event.preventDefault(); void run({ type: 'overlay', overlay: state?.overlay ? null : { kind: 'instances' } })
       }
     }
     document.addEventListener('keydown', handle)
     return () => document.removeEventListener('keydown', handle)
-  }, [state?.overlay, run])
+  }, [state?.overlay, state?.desktop.paletteShortcut, run])
   if (fatal) return <div className="fatal" role="alert">{fatal}</div>
   if (!state) return overlaySurface ? null : <div className="shell-loading"><LoaderCircle className="spin" /></div>
   const current = state.servers.find(server => server.id === state.activeId)
@@ -84,9 +91,12 @@ function App() {
         {state.preview && <span className="footer-caption">浏览器预览 · 示例数据</span>}
         <div className="footer-actions">
           {current && <IconButton label="重新加载网页" onClick={() => void run({ type: 'reload', id: current.id })}><RefreshCw /></IconButton>}
+          <IconButton label="开发者工具" title="开发者工具（F12）" aria-pressed={state.desktop.devToolsOpen} className={state.desktop.devToolsOpen ? 'active' : ''} onClick={() => void run({ type: 'desktop.devtools', target: 'page' })}><CodeXml /></IconButton>
+          <IconButton label="快捷操作" onClick={() => changeOverlay({ kind: 'palette' })}><CommandIcon /></IconButton>
           {current?.local && <IconButton label="管理本机 DSH" onClick={() => changeOverlay({ kind: 'local' })}><Settings2 /></IconButton>}
           <IconButton label="切换客户端主题" onClick={() => void run({ type: 'theme', theme: state.dark ? 'light' : 'dark' })}>{state.dark ? <Moon /> : <Sun />}</IconButton>
           <IconButton label="客户端设置" onClick={() => changeOverlay({ kind: 'settings' })}><Settings2 /></IconButton>
+          <IconButton label="任务通知中心" className="notification-button" onClick={() => changeOverlay({ kind: 'notifications' })}><Bell />{state.notifications.items.some(item => !item.read) && <span className="notification-count">{Math.min(99, state.notifications.items.filter(item => !item.read).length)}</span>}</IconButton>
           <IconButton label="关于 DSH Switcher" onClick={() => changeOverlay({ kind: 'about' })}><Info /></IconButton>
         </div>
       </footer>
@@ -146,6 +156,9 @@ function OverlayContent({ state, run, error, changeOverlay }: { state: AppState;
   }}>
     <div className={isMenu ? 'instance-menu' : overlay.kind === 'local' ? 'modal local-modal' : 'modal'} ref={panel} role="dialog" aria-modal="true" aria-labelledby="dialog-title" onKeyDown={trap}>
       {isMenu ? <InstanceMenu state={state} run={run} changeOverlay={changeOverlay} error={error} />
+        : overlay.kind === 'palette' ? <CommandPalette state={state} run={run} close={() => changeOverlay(null)} error={error} />
+        : overlay.kind === 'updates' ? <UpdateCenter state={state} run={run} close={() => changeOverlay(null)} error={error} />
+        : overlay.kind === 'notifications' ? <NotificationCenterPanel state={state} run={run} close={() => changeOverlay(null)} error={error} />
         : overlay.kind === 'local' ? <LocalRuntimePanel state={state} run={run} close={() => changeOverlay(null)} error={error} />
         : overlay.kind === 'settings' ? <DesktopSettings state={state} run={run} close={() => changeOverlay(null)} error={error} />
         : overlay.kind === 'about' ? <About state={state} run={run} close={() => changeOverlay(null)} />

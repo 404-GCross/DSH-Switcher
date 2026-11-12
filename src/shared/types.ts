@@ -1,6 +1,22 @@
 export type Theme = 'system' | 'light' | 'dark'
 export type ConnectionStatus = 'idle' | 'loading' | 'ready' | 'auth-required' | 'forbidden' | 'offline'
-export type Overlay = { kind: 'instances' | 'add' | 'about' | 'local' | 'settings' } | { kind: 'edit' | 'login' | 'remove'; id: string } | null
+export type Overlay = { kind: 'instances' | 'add' | 'about' | 'local' | 'settings' | 'palette' | 'updates' | 'notifications' } | { kind: 'edit' | 'login' | 'remove'; id: string } | null
+export type PaletteShortcut = 'mod+shift+p' | 'mod+shift+k' | 'mod+alt+p'
+export type UpdateFormat = 'auto' | 'rpm' | 'deb' | 'AppImage' | 'tar.gz' | 'zip' | 'dmg'
+export interface UpdatePreferences { channel: 'dev' | 'stable'; checkOnStartup: boolean; format: UpdateFormat }
+export interface ClientRelease { version: string; notes: string; url: string; publishedAt: string; filename: string; bytes: number; sha256: string; downloadUrl: string }
+export interface UpdateState {
+  status: 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'downloaded' | 'error'
+  release: ClientRelease | null
+  progress: number | null
+  error: string | null
+  detectedFormat: Exclude<UpdateFormat, 'auto'>
+  downloadedPath: string | null
+}
+export interface NotificationPreferences { enabled: boolean; sound: boolean; quiet: boolean; serverIds: string[] }
+export interface TaskNotice { id: string; eventKey: string; serverId: string; serverName: string; sessionId: string; sessionTitle: string; kind: 'completed' | 'failed' | 'input-required'; text: string; createdAt: number; read: boolean }
+export interface MonitorStatus { serverId: string; status: 'connecting' | 'connected' | 'offline' | 'auth-required' | 'unsupported'; detail: string }
+export interface NotificationState { items: TaskNotice[]; monitors: MonitorStatus[]; supported: boolean }
 
 export type DshHomeSelection = { mode: 'official' | 'legacy' } | { mode: 'custom'; directory: string }
 export type CloseBehavior = 'tray' | 'minimize' | 'quit'
@@ -62,12 +78,15 @@ export interface Connection extends Server {
 }
 
 export interface Settings {
-  version: 3
+  version: 4
   servers: Server[]
   defaultId: string | null
   theme: Theme
   local: { installation: LocalInstallation | null; home: DshHomeSelection; migrationPending: boolean; backupDirectory: string | null }
-  desktop: { closeBehavior: CloseBehavior }
+  desktop: { closeBehavior: CloseBehavior; paletteShortcut: PaletteShortcut }
+  recentServerIds: string[]
+  updates: UpdatePreferences
+  notifications: NotificationPreferences
 }
 
 export interface AppState {
@@ -81,7 +100,10 @@ export interface AppState {
   preview: boolean
   appVersion: string
   local: LocalRuntimeState
-  desktop: { closeBehavior: CloseBehavior; tray: TrayState }
+  desktop: { closeBehavior: CloseBehavior; tray: TrayState; paletteShortcut: PaletteShortcut; devToolsOpen: boolean }
+  recentServerIds: string[]
+  updates: UpdateState & UpdatePreferences
+  notifications: NotificationState & NotificationPreferences
 }
 
 export type LocalCommand =
@@ -104,6 +126,16 @@ export type Command =
   | { type: 'dismiss-notice' }
   | { type: 'desktop.close-behavior'; value: CloseBehavior }
   | { type: 'desktop.show' | 'desktop.quit' | 'desktop.check-tray' }
+  | { type: 'desktop.devtools'; target: 'page' | 'shell' }
+  | { type: 'desktop.palette-shortcut'; value: PaletteShortcut }
+  | { type: 'action'; id: string }
+  | { type: 'update.check' | 'update.download' | 'update.cancel' | 'update.open' }
+  | { type: 'update.configure'; value: UpdatePreferences }
+  | { type: 'notifications.configure'; value: NotificationPreferences }
+  | { type: 'notifications.read'; id?: string }
+  | { type: 'notifications.clear' | 'notifications.retry' }
+  | { type: 'notifications.open'; id: string }
+  | { type: 'notifications.copy-session'; id: string }
 
 export type CommandResult = { ok: true } | { ok: false; error: string }
 

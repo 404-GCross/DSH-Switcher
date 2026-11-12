@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, RefreshCw, LogOut } from 'lucide-react'
-import type { AppState, CloseBehavior, Command, Theme } from '../../shared/types'
+import type { AppState, CloseBehavior, Command, Theme, PaletteShortcut } from '../../shared/types'
 
 export function DesktopSettings({ state, run, close, error }: { state: AppState; run: (command: Command) => Promise<boolean>; close: () => void; error: string }) {
   const [checking, setChecking] = useState(false)
@@ -10,6 +10,8 @@ export function DesktopSettings({ state, run, close, error }: { state: AppState;
     <label className="field">关闭窗口时<select aria-label="关闭窗口时" value={state.desktop.closeBehavior} onChange={event => void run({ type: 'desktop.close-behavior', value: event.target.value as CloseBehavior })}>
       <option value="tray">收起到系统托盘</option><option value="minimize">最小化</option><option value="quit">退出程序</option>
     </select></label>
+    <label className="field">快捷操作按键<select aria-label="快捷操作按键" value={state.desktop.paletteShortcut} onChange={event => void run({ type: 'desktop.palette-shortcut', value: event.target.value as PaletteShortcut })}><option value="mod+shift+p">Ctrl / ⌘ + Shift + P</option><option value="mod+shift+k">Ctrl / ⌘ + Shift + K</option><option value="mod+alt+p">Ctrl / ⌘ + Alt + P</option></select></label>
+    <div className="runtime-controls"><button className="secondary" onClick={() => void run({ type: 'overlay', overlay: { kind: 'updates' } })}>客户端更新中心</button><button className="secondary" onClick={() => void run({ type: 'overlay', overlay: { kind: 'notifications' } })}>任务通知中心</button></div>
     <div className="tray-status" role="status"><span className={`status-dot ${state.desktop.tray.status === 'available' ? 'ready' : 'idle'}`} /><div><strong>{state.desktop.tray.status === 'available' ? '系统托盘可用' : state.desktop.tray.status === 'checking' ? '正在检测托盘' : '系统托盘暂不可用'}</strong><p>{state.desktop.tray.detail}</p></div></div>
     <button className="secondary" disabled={checking} onClick={async () => { setChecking(true); try { await run({ type: 'desktop.check-tray' }) } finally { setChecking(false) } }}><RefreshCw />{checking ? '检测中…' : '重新检测托盘'}</button>
     <p className="field-help">收起和最小化会保留当前网页及本机任务。切换服务器会关闭旧网页，未保存的草稿可能丢失。真正退出会停止客户端托管的本机 DSH。</p>

@@ -87,6 +87,38 @@ try {
   await waitStatus(page, 'ready')
   const alphaId = (await state(page)).activeId
 
+  await page.getByRole('button', { name: '开发者工具', exact: true }).click()
+  await expect.poll(async () => (await state(page)).desktop.devToolsOpen).toBe(true)
+  await expect(page.getByRole('button', { name: '开发者工具', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  assert.equal(await client.evaluate(({ webContents }, url) => webContents.getAllWebContents().find(item => item.getURL() === url).isDevToolsOpened(), a), true)
+  await command(page, { type: 'desktop.devtools', target: 'page' })
+  await expect.poll(async () => (await state(page)).desktop.devToolsOpen).toBe(false)
+  await client.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+    window.focus(); window.webContents.focus()
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'F12' })
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'F12' })
+  })
+  await expect.poll(async () => (await state(page)).desktop.devToolsOpen).toBe(true)
+  await command(page, { type: 'desktop.devtools', target: 'page' })
+  await client.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+    window.focus(); window.webContents.focus()
+    const modifiers = process.platform === 'darwin' ? ['meta', 'shift'] : ['control', 'shift']
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'P', modifiers })
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'P', modifiers })
+  })
+  const palette = client.windows().find(item => item.url().includes('surface=overlay'))
+  await expect(palette.getByRole('heading', { name: '快捷操作' })).toBeVisible()
+  await palette.getByRole('combobox', { name: '快捷操作搜索' }).fill('更新')
+  await palette.getByRole('combobox', { name: '快捷操作搜索' }).press('Enter')
+  await expect(palette.getByRole('heading', { name: '客户端更新中心' })).toBeVisible()
+  await palette.screenshot({ path: path.join(artifactDir, 'desktop-updates.png'), animations: 'disabled', omitBackground: true })
+  await command(page, { type: 'action', id: 'notifications' })
+  await expect(palette.getByRole('heading', { name: '任务通知中心' })).toBeVisible()
+  await palette.screenshot({ path: path.join(artifactDir, 'desktop-notifications.png'), animations: 'disabled', omitBackground: true })
+  await command(page, { type: 'overlay', overlay: null })
+
   const native = await client.evaluate(async ({ webContents }, url) => {
     const contents = webContents.getAllWebContents().find(item => item.getURL() === url)
     return contents.executeJavaScript(`({text:document.body.textContent,bridge:typeof window.desktop,require:typeof require})`)
@@ -101,8 +133,10 @@ try {
     return contents.id
   }, a)
 
+  await command(page, { type: 'desktop.devtools', target: 'page' })
   await command(page, { type: 'save', name: 'Beta', url: b })
   await waitStatus(page, 'auth-required')
+  assert.equal((await state(page)).desktop.devToolsOpen, false)
   assert.equal(await client.evaluate(({ webContents }, id) => !!webContents.fromId(id), oldAlpha), false)
   const betaId = (await state(page)).activeId
   await page.getByRole('button', { name: '输入登录链接' }).click()
@@ -153,6 +187,7 @@ try {
   await overlayPage.screenshot({ path: path.join(artifactDir, 'desktop-settings-dark.png'), omitBackground: true, animations: 'disabled' })
   await command(page, { type: 'overlay', overlay: null })
   await command(page, { type: 'desktop.check-tray' })
+  await command(page, { type: 'desktop.devtools', target: 'page' })
   const tray = (await state(page)).desktop.tray.status
   await client.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].close() })
   // Xvfb/headless may have no window manager: minimize acknowledgement is not guaranteed there.
@@ -160,6 +195,7 @@ try {
   assert.equal(await client.evaluate(({ webContents }, id) => !!webContents.fromId(id), currentAlpha), true)
   if (tray === 'available') await expect.poll(() => client.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(false)
   else await expect.poll(async () => (await state(page)).notice).toMatch(/最小化/)
+  assert.equal((await state(page)).desktop.devToolsOpen, false)
   await command(page, { type: 'desktop.show' })
   await expect.poll(() => client.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible())).toBe(true)
 
@@ -195,7 +231,7 @@ try {
   assert.equal(await readFile(path.join(directory, 'local-dsh', 'legacy-session.json'), 'utf8'), '{"preserved":true}')
   assert.deepEqual(JSON.parse(await readFile(path.join(directory, 'settings.json.v2.bak'), 'utf8')), legacy)
 
-  console.log('PASS: native page, isolated cookies, old page destroyed (including beforeunload), fresh draft, one live page, native overlay, close/restore, explicit exit, restart, theme, removal')
+  console.log('PASS: native page, isolated cookies, one live page, F12 and toolbar DevTools lifecycle, keyboard palette, update/notification panels, close/restore, explicit exit, restart, settings migration and removal')
 } finally {
   if (client) await client.close()
   await Promise.all(servers.map(server => new Promise(resolve => { server.closeAllConnections(); server.close(resolve) })))

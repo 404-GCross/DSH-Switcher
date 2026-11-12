@@ -6,11 +6,28 @@ import os from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 import YAML from 'yaml'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
+import { randomUUID } from 'node:crypto'
 
 const directory = await mkdtemp(path.join(process.env.SWITCHER_TEST_TMP ?? os.tmpdir(), 'switcher-local 空间-'))
 const version = process.env.SWITCHER_TEST_DSH_VERSION ?? '0.2.2-rc.1'
 const localId = '00000000-0000-4000-8000-000000000001'
 const officialHome = path.join(directory, 'official-home')
+let failModel = false
+const modelServer = createServer(async (request, response) => {
+  for await (const _chunk of request) { /* Consume the synthetic prompt without logging it. */ }
+  await new Promise(resolve => setTimeout(resolve, 600))
+  if (failModel) { response.writeHead(401, { 'content-type': 'application/json' }); response.end(JSON.stringify({ error: { message: 'fixture rejection', type: 'invalid_request_error', code: 'invalid_api_key' } })); return }
+  response.writeHead(200, { 'content-type': 'text/event-stream' })
+  const chunk = (delta, finish_reason = null) => ({ id: 'fixture-completion', object: 'chat.completion.chunk', created: 1, model: 'fixture-model', choices: [{ index: 0, delta, finish_reason }] })
+  response.write(`data: ${JSON.stringify(chunk({ role: 'assistant', content: 'Fixture task completed.' }))}\n\n`)
+  response.write(`data: ${JSON.stringify(chunk({}, 'stop'))}\n\n`)
+  response.end('data: [DONE]\n\n')
+})
+modelServer.listen(0, '127.0.0.1')
+await once(modelServer, 'listening')
+const modelURL = `http://127.0.0.1:${modelServer.address().port}/v1`
 await mkdir('test-results', { recursive: true })
 let client, page
 async function launch() {
@@ -43,7 +60,7 @@ try {
   // Same profile patch and credential-reference shape that CC Switch writes. No live API key or model call.
   await mkdir(path.join(officialHome, 'profiles/web'), { recursive: true })
   await writeFile(path.join(officialHome, 'profiles/web/cordis.patch.yml'), YAML.stringify([{ id: 'llm-pi-ai', config: { providers: { 'switcher-cc-fixture': {
-    displayName: 'CC Switch fixture', api: 'openai-completions', baseURL: 'http://127.0.0.1:1/v1', apiKeyEnv: 'CC_SWITCH_FIXTURE_KEY',
+    displayName: 'CC Switch fixture', api: 'openai-completions', baseURL: modelURL, apiKeyEnv: 'CC_SWITCH_FIXTURE_KEY',
     models: [{ id: 'fixture-model', name: 'Fixture Model', contextWindow: 32768 }],
   } } } }]))
   await writeFile(path.join(officialHome, '.credentials.yaml'), YAML.stringify({ version: 1, refs: { CC_SWITCH_FIXTURE_KEY: 'fixture-only-not-a-real-key' } }), { mode: 0o600 })
@@ -83,7 +100,7 @@ try {
   assert.equal(new URL(url).search, '')
   const config = await readFile(path.join(directory, 'settings.json'), 'utf8')
   assert.equal(config.includes('token='), false)
-  assert.equal(JSON.parse(config).version, 3)
+  assert.equal(JSON.parse(config).version, 4)
   const localPageId = await client.evaluate(({ webContents }, url) => webContents.getAllWebContents().find(item => item.getURL() === url).id, url)
   await command({ type: 'select', id: remoteId })
   assert.equal((await state()).local.process, 'running')
@@ -93,6 +110,31 @@ try {
   assert.equal((await state()).servers.find(item => item.id === localId).url, url, 'Switching pages must not restart local DSH')
   assert.notEqual(await client.evaluate(({ webContents }, url) => webContents.getAllWebContents().find(item => item.getURL() === url).id, url), localPageId)
   await command({ type: 'default', id: localId })
+
+  // Observe real official DSH turns while its webpage has been destroyed and the window closed.
+  await command({ type: 'notifications.configure', value: { enabled: true, quiet: true, sound: false, serverIds: [localId] } })
+  await expect.poll(async () => (await state()).notifications.monitors.find(item => item.serverId === localId)?.status, { timeout: 30000 }).toBe('connected')
+  async function rpc(endpoint, request) {
+    const response = await client.evaluate(async ({ session }, input) => {
+      const reply = await session.fromPartition(`persist:dsh-${input.localId}`).fetch(new URL(`api/${input.endpoint}`, input.url).href, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId: input.rpcId, method: input.endpoint, payload: { args: { request: input.request } } }) })
+      return reply.json()
+    }, { localId, url, endpoint, request, rpcId: randomUUID() })
+    assert.equal(response.result.ok, true, response.result.error?.code)
+    return response.result.value
+  }
+  const { sessionId: taskSession } = await rpc('session/create', { cwd: directory })
+  await rpc('session/rename', { sessionId: taskSession, title: 'Notification fixture' })
+  await rpc('session/selectModel', { sessionId: taskSession, provider: 'switcher-cc-fixture', model: 'fixture-model' })
+  await command({ type: 'select', id: remoteId })
+  await client.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].close() })
+  await rpc('session/prompt', { sessionId: taskSession, requestId: randomUUID(), mode: 'queue', content: [{ type: 'text', text: 'Reply briefly without tools.' }] })
+  await expect.poll(async () => (await state()).notifications.items.some(item => item.sessionId === taskSession && item.kind === 'completed'), { timeout: 60000 }).toBe(true)
+  failModel = true
+  await rpc('session/prompt', { sessionId: taskSession, requestId: randomUUID(), mode: 'queue', content: [{ type: 'text', text: 'Fixture failure turn.' }] })
+  await expect.poll(async () => (await state()).notifications.items.some(item => item.sessionId === taskSession && item.kind === 'failed'), { timeout: 60000 }).toBe(true)
+  failModel = false
+  await command({ type: 'desktop.show' })
+  await command({ type: 'select', id: localId })
   await command({ type: 'overlay', overlay: { kind: 'local' } })
   const panel = client.windows().find(p => p.url().includes('surface=overlay'))
   await expect(panel.getByRole('heading', { name: '本机 DSH' })).toBeVisible()
@@ -181,7 +223,8 @@ export function apply(ctx) {
   local = await waitForOperation(120000)
   await expect.poll(async () => (await state()).local.process, { timeout: 120000 }).toBe('running')
   assert.equal((await state()).local.installation.version, version)
-  console.log('PASS: cancel, cold Node download, official web home, CC Switch provider/model/credential configuration, background install, single-page switching without process restart, auto login, plugins, update preservation, existing CLI, explicit quit and restart')
+  assert.ok((await state()).notifications.items.some(item => item.sessionId === taskSession && item.kind === 'completed'))
+  console.log('PASS: cold Node/DSH installation, CC Switch configuration, real success/failure task notifications after page destruction and window close, persistent notification history, background install, plugins, data migration, update preservation, existing CLI and quit/restart')
 } catch (error) {
   if (page && !page.isClosed()) {
     const current = await state().catch(() => null)
@@ -190,5 +233,7 @@ export function apply(ctx) {
   throw error
 } finally {
   await client?.close()
+  modelServer.closeAllConnections()
+  await new Promise(resolve => modelServer.close(resolve))
   await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 })
 }

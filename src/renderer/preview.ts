@@ -1,6 +1,7 @@
 import type { AppState, Command, CommandResult, DesktopBridge } from '../shared/types'
 import { LOCAL_SERVER_ID } from '../shared/types'
 import { parseServerUrl, loginUrlFor } from '../main/server-url'
+import { clientActions } from '../shared/actions'
 
 const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444']
 
@@ -16,7 +17,10 @@ export function createPreviewBridge(): DesktopBridge {
     activeId: ids[1], defaultId: ids[1], theme: 'light', dark: false,
     overlay: { kind: 'instances' }, notice: null, preview: true, appVersion: '0.1.0',
     local: { installation: null, process: 'stopped', operation: null, candidates: [], latestVersion: null, error: null, logs: [], dataDirectory: '/home/demo/.dsh', runtimeDirectory: '用户数据目录/local-runtime', home: { selection: { mode: 'official' }, profile: 'web', officialDirectory: '/home/demo/.dsh', legacyDirectory: '用户数据目录/local-dsh', migrationPending: false, legacyHasData: false, targetHasData: false, backupDirectory: null } },
-    desktop: { closeBehavior: 'tray', tray: { status: 'unavailable', detail: '浏览器预览不提供系统托盘，桌面版会检测实际托盘服务。' } },
+    desktop: { closeBehavior: 'tray', paletteShortcut: 'mod+shift+p', devToolsOpen: false, tray: { status: 'unavailable', detail: '浏览器预览不提供系统托盘，桌面版会检测实际托盘服务。' } },
+    recentServerIds: [ids[1]],
+    updates: { channel: 'dev', checkOnStartup: false, format: 'auto', detectedFormat: 'deb', status: 'idle', release: null, error: null, progress: null, downloadedPath: null },
+    notifications: { enabled: true, sound: false, quiet: false, serverIds: [], items: [], monitors: [], supported: false },
   }
   const listeners = new Set<(state: AppState) => void>()
   const publish = () => { for (const listener of listeners) listener(structuredClone(state)) }
@@ -28,6 +32,12 @@ export function createPreviewBridge(): DesktopBridge {
   async function command(command: Command): Promise<CommandResult> {
     try {
       switch (command.type) {
+        case 'action': {
+          const item = clientActions(state).find(item => item.id === command.id)
+          if (!item?.enabled) throw new Error('此操作当前不可用')
+          state.overlay = null
+          return await bridgeCommand(item.command)
+        }
         case 'overlay': state.overlay = command.overlay; break
         case 'select': state.activeId = command.id; state.overlay = command.id === LOCAL_SERVER_ID && !state.local.installation ? { kind: 'local' } : null; break
         case 'default': state.defaultId = command.id; break
@@ -85,6 +95,19 @@ export function createPreviewBridge(): DesktopBridge {
         case 'desktop.check-tray': state.notice = '浏览器预览没有原生托盘，桌面版会重新检测'; break
         case 'desktop.show': break
         case 'desktop.quit': state.notice = '桌面版将停止托管进程并退出；浏览器预览不会关闭标签页'; break
+        case 'desktop.devtools': state.notice = '桌面版会打开当前网页的 Chromium 开发者工具（F12）'; break
+        case 'desktop.palette-shortcut': state.desktop.paletteShortcut = command.value; break
+        case 'update.configure': Object.assign(state.updates, command.value); break
+        case 'update.check': state.updates.status = 'current'; state.notice = '浏览器预览不查询真实发布信息'; break
+        case 'update.cancel': state.updates.status = 'idle'; break
+        case 'update.download':
+        case 'update.open': state.notice = '桌面版提供安装包下载与校验'; break
+        case 'notifications.configure': Object.assign(state.notifications, command.value); break
+        case 'notifications.read': state.notifications.items = state.notifications.items.map(item => !command.id || item.id === command.id ? { ...item, read: true } : item); break
+        case 'notifications.clear': state.notifications.items = []; break
+        case 'notifications.retry': state.notice = '浏览器预览不连接任务事件接口'; break
+        case 'notifications.open':
+        case 'notifications.copy-session': break
         case 'local.cancel': clearTimeout(installTimer); state.local.operation = null; state.local.error = '演示操作已取消'; break
         case 'local.install':
         case 'local.use-existing': {
@@ -122,6 +145,7 @@ export function createPreviewBridge(): DesktopBridge {
       return { ok: true }
     } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '操作失败' } }
   }
+  const bridgeCommand = command
   return {
     state: async () => structuredClone(state), command,
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },

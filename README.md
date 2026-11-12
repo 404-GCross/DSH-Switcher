@@ -72,6 +72,30 @@ Windows ZIP 解压后运行 `DSH Switcher.exe`；macOS DMG 将应用拖到 Appli
 - 复用已有官方 DSH CLI，查看本机进度、脱敏日志，启动、停止和重启。
 - 默认使用官方数据目录和 `web` profile，与 CC Switch 共享提供商配置；旧独立环境可备份迁移或继续使用。
 - 关闭窗口收起到系统托盘；托盘菜单支持显示窗口、切换服务器、本机控制、设置、关于和退出。
+- F12 与右下角 `</>` 按钮打开当前网页的 Chromium 开发者工具；支持右键检查元素。
+- 快捷操作面板、客户端更新中心，以及跨服务器后台任务通知。
+
+### 开发者工具与快捷操作
+
+右下角刷新按钮旁的 **开发者工具** 按钮与 **F12** 共用开关，打开时按钮高亮。Windows / Linux 也可用 `Ctrl+Shift+I`，macOS 可用 `⌘+Option+I`。开发者工具默认在独立窗口打开，包含 Elements、Console、Network、Application 等 Chromium 面板；加载中或报错的服务器网页也可检查。首页没有服务器网页时检查客户端外壳。切换服务器、收起到托盘或退出时关闭对应工具窗口。
+
+**视图** 菜单和快捷操作面板还提供“客户端界面开发者工具”，用于检查客户端底栏和弹窗。网页右键菜单提供检查元素及适用的剪切、复制、粘贴和全选。
+
+使用 `Ctrl/⌘+Shift+P` 或右下角快捷操作按钮打开命令面板，输入服务器名或操作名称，使用 ↑↓ / Enter 执行。最近使用的服务器优先显示；支持本机进程控制、数据目录、设置、通知和更新。设置中可改用 `Ctrl/⌘+Shift+K` 或 `Ctrl/⌘+Alt+P`。
+
+### 客户端更新中心
+
+通过设置、快捷操作或托盘打开更新中心。默认检查 `dev` 开发版，也可选择稳定版；稳定版尚未发布时会说明检查失败。启动自动检查默认关闭，可在界面启用。客户端升级与本机官方 DSH 的独立更新各有入口。
+
+更新中心识别平台、架构和 RPM / DEB / AppImage 等安装来源，也可手动选择该平台支持的包格式。版本和包信息取自本仓库 GitHub Release 与构建清单；下载支持进度、取消、重试，大小和 SHA256 验证成功后才提供打开入口。RPM / DEB / DMG 交给系统安装工具，ZIP / AppImage / tar.gz 定位到下载目录，由用户替换程序。下载不自动退出客户端或停止本机任务。
+
+### 任务通知中心
+
+通过右下角铃铛、快捷操作或托盘打开通知中心，勾选需要监听的服务器。支持任务完成、失败和等待输入消息，提供声音、免打扰、未读标记、全部已读和清空记录。系统不支持原生通知时仍可查看通知历史。
+
+后台通过已登录服务器的官方 `session/control`、`session/observeEvent` 和只读会话接口监听，已对 DSH `0.2.2-rc.1` 验证。仅明确的 `turn/end` 成功结果算完成，取消不会误报成功；等待审批和回答按服务端 `pendingInput` 状态检查。首次连接不弹出历史任务，重连对事件去重。不兼容或登录失效的连接会显示具体状态。
+
+监听独立于网页生命周期：切换服务器销毁旧网页后、收起窗口后仍监听，退出客户端则结束。最多勾选 20 台服务器，每台跟踪最近 100 个活跃普通会话；每 10 秒发现会话并检查等待输入状态，历史保留最近 200 条。通知记录位于 `userData/notifications.json`。官方网页目前没有可用的会话深链接，点击通知会打开对应服务器并提示会话名称，也可复制会话 ID；等待输入是否持续保留取决于服务端和其他在线回答界面。
 
 ## 在本机安装 DSH
 
@@ -96,7 +120,7 @@ Windows ZIP 解压后运行 `DSH Switcher.exe`；macOS DMG 将应用拖到 Appli
 
 让 CC Switch 的 DSH 数据目录与本机管理页显示的路径一致。客户端选用 `web` profile，读取 `profiles/web/cordis.patch.yml` 与共享 `.credentials.yaml`，提供商、模型和凭据由官方 DSH 解析。CC Switch 使用自定义目录时，在客户端选择同一路径；桌面菜单启动的应用不一定继承终端里的环境变量。修改后可重启本机 DSH 以重新读取配置。
 
-升级旧客户端时，设置文件自动迁移到 v3，保留 `settings.json.v1.bak` 或 `settings.json.v2.bak`。发现旧 `local-dsh` 环境后先展示选择界面，确认前不自动启动：
+升级旧客户端时，设置文件自动迁移到 v4，保留对应的 `settings.json.v1.bak`、`settings.json.v2.bak` 或 `settings.json.v3.bak`。发现旧 `local-dsh` 环境后先展示选择界面，确认前不自动启动：
 
 - **备份迁移并启动**：仅允许空的官方目标目录；保留旧环境并备份到 `userData/backups/`，复制到临时目录，将 `switcher` profile 转为 `web`，恢复插件依赖并用官方 CLI 验证，再启用。不会覆盖已有官方数据。
 - **使用官方目录**：直接使用现有 `DSH_HOME` / `~/.dsh`，保留旧环境。
@@ -169,11 +193,11 @@ npm run package:win
 npm run package:mac
 ```
 
-桌面测试使用独立的临时用户目录、`DSH_HOME` 和 HTTP 测试服务，验证真实 WebContentsView 销毁与重建、Cookie 保留、单网页约束、401 登录、菜单层级、关窗/恢复、明确退出和重启恢复；需要图形显示服务，Linux CI 可用 `xvfb-run -a npm run test:desktop`。`SWITCHER_TEST_HEADLESS=1` 可以尝试 Chromium 的 headless 平台，取决于 Electron 和宿主支持情况。
+桌面测试使用独立的临时用户目录、`DSH_HOME` 和 HTTP 测试服务，验证真实 WebContentsView 销毁与重建、Cookie 保留、单网页约束、F12/按钮开发者工具生命周期、快捷操作键盘交互、更新/通知界面、401 登录、关窗/恢复、明确退出和重启恢复；需要图形显示服务，Linux CI 可用 `xvfb-run -a npm run test:desktop`。`SWITCHER_TEST_HEADLESS=1` 可以尝试 Chromium 的 headless 平台，取决于 Electron 和宿主支持情况。
 
 `test:real-dsh` 需要已安装的 `dsh` 命令（也可通过 `DSH_BIN` 指定），使用隔离的 DSH home 启动真实 Web 服务，验证登录、官方首次启动页面与工作区选择入口。它不发送模型请求，也不需要 API key。
 
-`test:local-runtime` 从干净用户目录强制下载官方 Node.js，再安装指定官方 DSH，验证取消、关窗后台安装、切换网页不重启本机进程、CC Switch 格式的提供商/模型与凭据引用读取、自动登录、真实外部插件安装和加载、失败更新保留旧环境、已有 CLI 接入、旧 profile 备份迁移与依赖恢复，以及退出清理和客户端重启。测试使用虚构凭据，不调用模型，默认 DSH `0.2.2-rc.1`，可通过 `SWITCHER_TEST_DSH_VERSION` 指定。`SWITCHER_TEST_EXECUTABLE` 可指定打包后的应用；首次下载需要访问 Node.js 和 npm 官方站点。
+`test:local-runtime` 从干净用户目录强制下载官方 Node.js，再安装指定官方 DSH，验证取消、关窗后台安装、切换网页不重启本机进程、CC Switch 配置读取、自动登录、真实外部插件、失败更新保留旧环境、已有 CLI 接入、旧 profile 备份迁移与依赖恢复，以及退出清理和客户端重启。本机模拟模型服务还让官方 DSH 实际执行成功和失败的轮次，验证页面销毁、窗口收起后收到通知及重启保留历史。测试使用虚构凭据，不调用真实模型，默认 DSH `0.2.2-rc.1`，可通过 `SWITCHER_TEST_DSH_VERSION` 指定。`SWITCHER_TEST_EXECUTABLE` 可指定打包后的应用；首次下载需要访问 Node.js 和 npm 官方站点。
 
 产物位于 `release/`。`package:linux` 一次生成 RPM、DEB、AppImage 和 tar.gz。构建 RPM 需要 `rpmbuild`（Fedora 安装 `rpm-build`，Ubuntu 安装 `rpm`）；AppImage 使用固定版本工具集。Windows 和 macOS 推荐在对应系统打包；Actions 使用各系统原生 runner。打包器使用官方平台 PNG 生成平台图标。
 

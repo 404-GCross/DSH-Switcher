@@ -27,18 +27,26 @@ export const homeSelectionSchema = z.union([
   z.object({ mode: z.enum(['official', 'legacy']) }).strict(),
   z.object({ mode: z.literal('custom'), directory: z.string().min(1).refine(path.isAbsolute) }).strict(),
 ])
-const schema = z.object({
+const v3Schema = z.object({
   ...fields, version: z.literal(3),
   local: z.object({ installation: installation.nullable(), home: homeSelectionSchema, migrationPending: z.boolean(), backupDirectory: z.string().nullable() }).strict(),
   desktop: z.object({ closeBehavior: z.enum(['tray', 'minimize', 'quit']) }).strict(),
-}).strict().superRefine((value, context) => {
+}).strict()
+export const updatePreferencesSchema = z.object({ channel: z.enum(['dev', 'stable']), checkOnStartup: z.boolean(), format: z.enum(['auto', 'rpm', 'deb', 'AppImage', 'tar.gz', 'zip', 'dmg']) }).strict()
+export const notificationPreferencesSchema = z.object({ enabled: z.boolean(), sound: z.boolean(), quiet: z.boolean(), serverIds: z.array(z.uuid()).max(20) }).strict()
+export const paletteShortcutSchema = z.enum(['mod+shift+p', 'mod+shift+k', 'mod+alt+p'])
+const schema = v3Schema.extend({
+  version: z.literal(4),
+  desktop: z.object({ closeBehavior: z.enum(['tray', 'minimize', 'quit']), paletteShortcut: paletteShortcutSchema }).strict(),
+  recentServerIds: z.array(z.uuid()).max(20), updates: updatePreferencesSchema, notifications: notificationPreferencesSchema,
+}).superRefine((value, context) => {
   const ids = new Set(value.servers.map(server => server.id))
   if (ids.size !== value.servers.length) context.addIssue({ code: 'custom', message: 'Duplicate server identity' })
   if (ids.has(LOCAL_SERVER_ID)) context.addIssue({ code: 'custom', message: 'Reserved local identity' })
   if (value.defaultId && value.defaultId !== LOCAL_SERVER_ID && !ids.has(value.defaultId)) context.addIssue({ code: 'custom', message: 'Unknown default server' })
 })
 
-export const emptySettings = (): Settings => ({ version: 3, servers: [], defaultId: null, theme: 'system', local: { installation: null, home: { mode: 'official' }, migrationPending: false, backupDirectory: null }, desktop: { closeBehavior: 'tray' } })
+export const emptySettings = (): Settings => ({ version: 4, servers: [], defaultId: null, theme: 'system', local: { installation: null, home: { mode: 'official' }, migrationPending: false, backupDirectory: null }, desktop: { closeBehavior: 'tray', paletteShortcut: 'mod+shift+p' }, recentServerIds: [], updates: { channel: 'dev', checkOnStartup: false, format: 'auto' }, notifications: { enabled: true, sound: false, quiet: false, serverIds: [] } })
 
 /** Serialized, atomic settings writes; a failed write does not publish the proposed value. */
 export class SettingsStore {
@@ -55,14 +63,14 @@ export class SettingsStore {
     let candidate: unknown = JSON.parse(data)
     const v1 = z.object({ ...fields, version: z.literal(1) }).strict().safeParse(candidate)
     const v2 = z.object({ ...fields, version: z.literal(2), local: z.object({ installation: installation.nullable() }).strict() }).strict().safeParse(candidate)
-    const previous = v1.success ? v1.data : v2.success ? v2.data : null
+    const v3 = v3Schema.safeParse(candidate)
+    const previous = v1.success ? v1.data : v2.success ? v2.data : v3.success ? v3.data : null
     if (previous) {
       const installed = v2.success ? v2.data.local.installation : null
-      const hasLegacy = !!installed || await directoryHasData(path.join(path.dirname(this.filename), 'local-dsh'))
-      candidate = {
-        ...previous, version: 3,
-        local: { installation: installed, home: { mode: hasLegacy ? 'legacy' : 'official' }, migrationPending: hasLegacy, backupDirectory: null },
-        desktop: { closeBehavior: 'tray' },
+      const hasLegacy = !v3.success && (!!installed || await directoryHasData(path.join(path.dirname(this.filename), 'local-dsh')))
+      candidate = { ...emptySettings(), ...previous, version: 4,
+        local: v3.success ? v3.data.local : { installation: installed, home: { mode: hasLegacy ? 'legacy' : 'official' }, migrationPending: hasLegacy, backupDirectory: null },
+        desktop: { closeBehavior: v3.success ? v3.data.desktop.closeBehavior : 'tray', paletteShortcut: 'mod+shift+p' },
       }
     }
     const parsed = schema.safeParse(candidate)

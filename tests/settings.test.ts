@@ -54,7 +54,7 @@ test('v1 settings migrate with a backup while keeping remote identities and defa
   await writeFile(filename, original)
   const store = new SettingsStore(filename)
   await store.load()
-  assert.equal(store.snapshot.version, 3)
+  assert.equal(store.snapshot.version, 4)
   assert.equal(store.snapshot.defaultId, id)
   assert.equal(store.snapshot.local.installation, null)
   assert.deepEqual(store.snapshot.local.home, { mode: 'official' })
@@ -63,6 +63,21 @@ test('v1 settings migrate with a backup while keeping remote identities and defa
   assert.equal(await readFile(`${filename}.v1.bak`, 'utf8'), original)
   await store.update(settings => ({ ...settings, defaultId: LOCAL_SERVER_ID }))
   assert.equal(store.snapshot.defaultId, LOCAL_SERVER_ID)
+}))
+
+test('v3 settings gain desktop tools without changing the selected DSH environment', () => fixture(async directory => {
+  const filename = path.join(directory, 'settings.json')
+  const original = { version: 3, servers: [], defaultId: null, theme: 'dark', local: { installation: null, home: { mode: 'custom', directory: path.join(directory, 'home') }, migrationPending: false, backupDirectory: 'existing-backup' }, desktop: { closeBehavior: 'minimize' } }
+  await writeFile(filename, JSON.stringify(original))
+  const store = new SettingsStore(filename)
+  await store.load()
+  assert.equal(store.snapshot.version, 4)
+  assert.deepEqual(store.snapshot.local, original.local)
+  assert.equal(store.snapshot.desktop.closeBehavior, 'minimize')
+  assert.equal(store.snapshot.desktop.paletteShortcut, 'mod+shift+p')
+  assert.deepEqual(store.snapshot.notifications.serverIds, [])
+  assert.equal(store.snapshot.updates.checkOnStartup, false)
+  assert.deepEqual(JSON.parse(await readFile(`${filename}.v3.bak`, 'utf8')), original)
 }))
 
 test('v2 legacy data requires a decision and keeps a byte-identical backup across restarts', () => fixture(async directory => {
