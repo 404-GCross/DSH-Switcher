@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Used from both a mounted AppImage and --appimage-extract-and-run.
+# Keep Chromium's sandbox behavior consistent with the native packages;
+# the builder's default launcher silently adds --no-sandbox on some hosts.
+appdir="${APPDIR:-$(dirname "$(readlink -f "$0")")}"
+export LD_LIBRARY_PATH="$appdir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XDG_DATA_DIRS="$appdir/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+exec "$appdir/dsh-switcher" "$@"

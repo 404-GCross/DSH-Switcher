@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "A desktop home for your native DSH web instances",
+  "desktopName": "dsh-switcher.desktop",
   "license": "MIT",
   "author": {
     "name": "GCross",
@@ -30,7 +31,7 @@
     "test:local-runtime": "node scripts/test-local-runtime.mjs",
     "test:release": "node --test tests/release.test.mjs",
     "check": "npm test && npm run test:release && npm run build",
-    "package:linux": "npm run build && electron-builder --linux rpm tar.gz --x64 --publish never",
+    "package:linux": "npm run build && electron-builder --linux rpm deb AppImage tar.gz --x64 --publish never",
     "package:win": "npm run build && electron-builder --win zip --x64 --publish never",
     "package:mac": "npm run build && electron-builder --mac dmg zip --publish never"
   },
@@ -92,10 +93,19 @@
       "icon": "build/dsh-windows.png",
       "target": [
         "rpm",
+        "deb",
+        "AppImage",
         "tar.gz"
+      ],
+      "extraFiles": [
+        {
+          "from": "build/linux/AppRun",
+          "to": "AppRun"
+        }
       ],
       "category": "Development",
       "executableName": "dsh-switcher",
+      "syncDesktopName": true,
       "maintainer": "GCross <176783842+404-GCross@users.noreply.github.com>",
       "synopsis": "Multi-server DeepSeek Harness desktop client",
       "desktop": {
@@ -124,6 +134,28 @@
         "--rpm-rpmbuild-define",
         "_build_id_links none"
       ]
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0 | libgtk-3-0t64",
+        "libnotify4",
+        "libnss3",
+        "libnspr4",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0 | libatspi2.0-0t64",
+        "libuuid1",
+        "libasound2 | libasound2t64",
+        "libgbm1",
+        "libsecret-1-0"
+      ]
+    },
+    "appImage": {
+      "executableArgs": []
+    },
+    "toolsets": {
+      "appimage": "1.0.3"
     },
     "win": {
       "icon": "build/dsh-windows.png",

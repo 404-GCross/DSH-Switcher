@@ -35,8 +35,14 @@ test('development builds distinguish workflow attempts and reject an already-sta
 })
 test('a complete, matching four-platform release can be published', () => fixture(async directory => {
   const manifests = await verifyManifests(directory, sha, version)
-  assert.equal(manifests.flatMap(item => item.files).length, 7)
+  assert.equal(manifests.flatMap(item => item.files).length, 9)
 }))
+for (const extension of ['deb', 'AppImage']) {
+  test(`a missing Linux ${extension} blocks publication`, () => fixture(async directory => {
+    await rm(path.join(directory, `DSH-Switcher-${version}-linux-x64.${extension}`))
+    await assert.rejects(verifyManifests(directory, sha, version), /ENOENT/)
+  }))
+}
 test('an artifact modified after hashing cannot be published', () => fixture(async directory => {
   await writeFile(path.join(directory, `DSH-Switcher-${version}-linux-x64.rpm`), 'corrupted package')
   await assert.rejects(verifyManifests(directory, sha, version), /checksum/)

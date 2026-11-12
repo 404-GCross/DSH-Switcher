@@ -33,7 +33,7 @@ const metadataName = `build-manifest-${version}.json`
 await writeFile(path.join(directory, checksumsName), `${files.map(file => `${file.sha256}  ${file.name}`).join('\n')}\n`)
 await writeFile(path.join(directory, metadataName), `${JSON.stringify({ version, commit: sha, platforms: manifests }, null, 2)}\n`)
 const runUrl = `https://github.com/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`
-const body = `自动开发版（Pre-release）\n\n- 版本：\`${version}\`\n- 源码：[\`${sha.slice(0, 12)}\`](https://github.com/${repo}/commit/${sha})\n- [检查与构建记录](${runUrl})\n\n## 下载\n\n- Fedora / Linux x86_64：RPM（推荐）或 tar.gz\n- Windows x64：ZIP\n- macOS Apple Silicon：arm64 DMG / ZIP\n- macOS Intel：x64 DMG / ZIP\n\nFedora 使用 \`sudo dnf install ./DSH-Switcher-*.rpm\` 安装或更新。校验文件：\`${checksumsName}\`。\n\nWindows 未签名；macOS 使用临时签名，未公证。固定 \`dev\` 标签随通过全部检查的 main 构建更新。`
+const body = `自动开发版（Pre-release）\n\n- 版本：\`${version}\`\n- 源码：[\`${sha.slice(0, 12)}\`](https://github.com/${repo}/commit/${sha})\n- [检查与构建记录](${runUrl})\n\n## 下载\n\n- Fedora x86_64：RPM\n- Debian / Ubuntu / Linux Mint x86_64：DEB\n- Arch / Manjaro 及其他 glibc Linux x86_64：AppImage 或 tar.gz\n- Windows x64：ZIP\n- macOS Apple Silicon：arm64 DMG / ZIP\n- macOS Intel：x64 DMG / ZIP\n\nFedora 使用 \`sudo dnf install ./DSH-Switcher-*.rpm\`；Debian / Ubuntu 使用 \`sudo apt install ./DSH-Switcher-*.deb\`。AppImage 赋予执行权限后运行；无 FUSE 时可加 \`--appimage-extract-and-run\`。校验文件：\`${checksumsName}\`。\n\nCI 覆盖 Fedora 44 RPM、Debian 12/13 与 Ubuntu 22.04/24.04 DEB，以及 Ubuntu、Arch 的 AppImage 启动。Mint / Manjaro 沿用上游兼容方式，未单独运行发行版测试。\n\nWindows 未签名；macOS 使用临时签名，未公证。固定 \`dev\` 标签随通过全部检查的 main 构建更新。`
 let release = old
 if (!release) {
   const ref = await api('git/ref/tags/dev', 'GET', undefined, true)

@@ -6,17 +6,21 @@
 
 [下载开发版（dev Pre-release）](https://github.com/404-GCross/DSH-Switcher/releases/tag/dev) · [GitHub Actions](https://github.com/404-GCross/DSH-Switcher/actions/workflows/desktop.yml)
 
-## 下载与 Fedora 安装
+## 下载与 Linux 安装
 
 开发版支持以下平台：
 
 | 平台 | 架构 | 包格式 |
 | --- | --- | --- |
-| Fedora / Linux | x86_64 | **RPM**、tar.gz |
+| Fedora | x86_64 | **RPM** |
+| Debian / Ubuntu / Linux Mint | x86_64 | **DEB** |
+| Arch / Manjaro 及其他 glibc Linux | x86_64 | **AppImage**、tar.gz |
 | Windows | x64 | ZIP |
 | macOS | Apple Silicon arm64、Intel x64 | DMG、ZIP |
 
-Fedora 优先使用 RPM。在开发版页面下载当前的 `linux-x86_64.rpm` 文件，在只包含该版本 RPM 的目录执行：
+### Fedora
+
+在开发版页面下载当前的 `linux-x86_64.rpm` 文件，在只包含该版本 RPM 的目录执行：
 
 ```sh
 sudo dnf install ./DSH-Switcher-*.rpm
@@ -24,7 +28,38 @@ sudo dnf install ./DSH-Switcher-*.rpm
 
 RPM 安装运行依赖、菜单入口和图标；安装后从应用菜单打开 **DSH Switcher**，或运行 `dsh-switcher`。下载新版 RPM 后用相同命令更新。卸载使用 `sudo dnf remove dsh-switcher`；个人连接和登录数据保留在用户目录。
 
-Linux 原生支持 X11 / Wayland；CI 验证 Fedora 44 的安装、依赖与卸载，并在 Linux 图形测试环境运行桌面集成测试。Windows ZIP 解压后运行 `DSH Switcher.exe`；macOS DMG 将应用拖到 Applications。开发版 Windows 包未签名，macOS 包使用临时签名、未公证。
+### Debian / Ubuntu / Linux Mint
+
+下载 `.deb`，在只包含该版本 DEB 的目录执行：
+
+```sh
+sudo apt install ./DSH-Switcher-*.deb
+```
+
+APT 自动安装所需依赖、菜单入口和图标。更新使用相同命令；卸载使用 `sudo apt remove dsh-switcher`，个人数据保留。依赖声明同时支持 Ubuntu 24.04 / Debian 13 的 `t64` 库命名。
+
+### Arch / Manjaro 与其他 Linux
+
+下载 `.AppImage`，赋予执行权限后直接运行，无需安装 DSH 或 Node.js：
+
+```sh
+chmod +x ./DSH-Switcher-*.AppImage
+./DSH-Switcher-*.AppImage
+```
+
+AppImage 使用静态链接的运行时。系统不能挂载 FUSE 时，可使用免挂载启动：
+
+```sh
+./DSH-Switcher-*.AppImage --appimage-extract-and-run
+```
+
+更新时退出客户端并替换 AppImage；删除文件即可移除程序，个人配置继续保留。AppImage 不自动注册系统应用菜单。也可下载 `tar.gz`，解压后运行目录中的 `dsh-switcher`。
+
+通用包面向带 GTK 3、NSS、ALSA、GBM 等图形运行库的 glibc 桌面系统。Arch 的精简安装可补齐 `gtk3 nss alsa-lib libxss libxtst libnotify libsecret mesa xdg-utils`。AppImage 不会自动关闭 Chromium sandbox；Ubuntu 24.04 等限制用户命名空间的系统优先使用 DEB，其安装脚本提供应用级 AppArmor 配置。
+
+CI 验证 Fedora 44 RPM 的安装、依赖与卸载；Debian 12/13、Ubuntu 22.04/24.04 DEB 的安装、原生桌面集成和卸载；Ubuntu 22.04 与 Arch 的 AppImage 启动。Mint / Manjaro 使用对应上游兼容包，未单独运行发行版测试。Linux 窗口支持 X11 / Wayland，发行版容器测试使用 Xvfb，不代表真实桌面面板验证。
+
+Windows ZIP 解压后运行 `DSH Switcher.exe`；macOS DMG 将应用拖到 Applications。开发版 Windows 包未签名，macOS 包使用临时签名、未公证。
 
 ## 当前功能
 
@@ -140,7 +175,7 @@ npm run package:mac
 
 `test:local-runtime` 从干净用户目录强制下载官方 Node.js，再安装指定官方 DSH，验证取消、关窗后台安装、切换网页不重启本机进程、CC Switch 格式的提供商/模型与凭据引用读取、自动登录、真实外部插件安装和加载、失败更新保留旧环境、已有 CLI 接入、旧 profile 备份迁移与依赖恢复，以及退出清理和客户端重启。测试使用虚构凭据，不调用模型，默认 DSH `0.2.2-rc.1`，可通过 `SWITCHER_TEST_DSH_VERSION` 指定。`SWITCHER_TEST_EXECUTABLE` 可指定打包后的应用；首次下载需要访问 Node.js 和 npm 官方站点。
 
-产物位于 `release/`。Linux 构建 RPM 需要 `rpmbuild`（Fedora 安装 `rpm-build`，Ubuntu 安装 `rpm`）。Windows 和 macOS 推荐在对应系统打包；Actions 使用各系统原生 runner。打包器使用官方平台 PNG 生成平台图标。
+产物位于 `release/`。`package:linux` 一次生成 RPM、DEB、AppImage 和 tar.gz。构建 RPM 需要 `rpmbuild`（Fedora 安装 `rpm-build`，Ubuntu 安装 `rpm`）；AppImage 使用固定版本工具集。Windows 和 macOS 推荐在对应系统打包；Actions 使用各系统原生 runner。打包器使用官方平台 PNG 生成平台图标。
 
 ## 自动检查与 dev 发布
 
@@ -149,12 +184,13 @@ npm run package:mac
 1. `npm ci` 使用锁文件安装；actionlint 检查工作流；运行单元测试、发布完整性测试、TypeScript 检查和生产构建。
 2. 桌面集成测试验证原生网页销毁/重建、401 登录、Cookie 隔离与保留、菜单层级、关窗/恢复和退出。
 3. Linux、Windows、macOS arm64 / x64 各自构建，对打包后的应用运行桌面与本机安装集成测试，检查实际进程架构；本机安装测试强制使用下载的 Node.js，不复用 runner 的系统 Node。
-4. Linux 额外在 Fedora 44 容器中安装 RPM，检查依赖、图标、desktop 文件、可执行文件和卸载。
-5. 每个平台生成带 SHA256、大小、版本和源码提交的产物清单；发布前验证所有四个平台的完整性。
+4. Linux 额外验证 Fedora 44 RPM，以及 Ubuntu 上的 AppImage 实际启动入口。
+5. 独立兼容性矩阵在 Debian 12/13、Ubuntu 22.04/24.04 中安装 DEB，检查依赖、图标、desktop 文件、实际 GUI 集成与卸载；Arch 容器验证 AppImage。容器以普通用户运行应用，使用隔离的 home、D-Bus 与 Xvfb；仅容器测试因命名空间限制传入 `--no-sandbox`，原生 runner 测试和发行包保持默认 sandbox。
+6. 每个平台生成带 SHA256、大小、版本和源码提交的产物清单；发布前必须集齐四个平台的九个安装包/归档，缺少 DEB 或 AppImage 同样阻止发布。
 
-只有 `main` 的 push / 手动构建会发布。固定标签 **`dev`** 对应 Pre-release；版本形如 `0.1.0-dev.42.1`，末两段是工作流运行编号和重试次数，RPM 使用 `~dev` 版本排序。不同开发构建可以由 `dnf` 正确比较；稳定版版本号高于同基线的开发版。
+只有 `main` 的 push / 手动构建会发布。固定标签 **`dev`** 对应 Pre-release；版本形如 `0.1.0-dev.42.1`，末两段是工作流运行编号和重试次数，RPM / DEB 使用 `~dev` 版本排序。不同开发构建可以由 `dnf` / APT 正确比较；稳定版版本号高于同基线的开发版。
 
-所有检查、平台构建和 RPM 验证都成功后才更新发布。发布任务串行执行，并检查源码是否仍是最新 `main`，避免旧构建覆盖新开发版。产物使用带版本号的文件名，全部上传成功后才更新标签和发布说明，再清理旧构建资产。上传中断可能留下新版本的部分资产，但不会先删除上一版。PR 只运行检查和构建，不发布。
+所有检查、平台构建和 Linux 发行版兼容性验证都成功后才更新发布。发布任务串行执行，并检查源码是否仍是最新 `main`，避免旧构建覆盖新开发版。产物使用带版本号的文件名，全部上传成功后才更新标签和发布说明，再清理旧构建资产。上传中断可能留下新版本的部分资产，但不会先删除上一版。PR 只运行检查和构建，不发布。
 
 Release 包含全部安装包、SHA256 校验文件和构建清单。发布使用工作流自带 `GITHUB_TOKEN`；只有发布 job 获得 `contents: write`，无需额外 PAT。`test:real-dsh` 是独立的本地兼容性验证，不属于默认 CI，以免打包流程依赖模型凭据或额外 DSH 安装。
 

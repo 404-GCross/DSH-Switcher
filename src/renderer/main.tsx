@@ -81,7 +81,7 @@ function App() {
           aria-label="切换服务器" aria-haspopup="dialog" aria-expanded={!!state.overlay} title="切换服务器（Ctrl / ⌘ + Shift + S）">
           <Monitor /><span className={`status-dot ${current?.status ?? 'idle'}`} /><span className="trigger-name">{current?.name ?? '连接服务器'}</span><ChevronUp className="chevron" />
         </button>
-        <span className="footer-caption">{state.preview ? '浏览器预览 · 示例数据' : current ? statusLabels[current.status] : 'DSH Switcher'}</span>
+        {state.preview && <span className="footer-caption">浏览器预览 · 示例数据</span>}
         <div className="footer-actions">
           {current && <IconButton label="重新加载网页" onClick={() => void run({ type: 'reload', id: current.id })}><RefreshCw /></IconButton>}
           {current?.local && <IconButton label="管理本机 DSH" onClick={() => changeOverlay({ kind: 'local' })}><Settings2 /></IconButton>}

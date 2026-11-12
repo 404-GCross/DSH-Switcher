@@ -11,3 +11,7 @@ Source: https://github.com/deepseek-ai/deepseek-harness/tree/fcc0ad462172522aaf5
 Linux, Windows, window chrome and tray use the rounded Windows artwork. macOS uses its inset rounded artwork. The original square artwork remains as a source reference.
 
 DeepSeek Harness source is MIT licensed, copyright DeepSeek. Its brand usage guidelines are at https://github.com/deepseek-ai/deepseek-harness/blob/master/BRAND_GUIDELINES.md. DSH Switcher is an independent third-party client, not an official DeepSeek application.
+
+## Linux portable launcher
+
+`linux/AppRun` is copied into the Linux application directory and replaces the builder-generated AppImage launcher when that directory is packed. It supports mounted and extracted AppImages, forwards arguments, and keeps Chromium's default sandbox behavior. The AppImage toolset version is pinned in `package.json`; CI tests the actual AppImage entrypoint.

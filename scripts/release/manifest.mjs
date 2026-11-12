@@ -4,7 +4,7 @@ import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-export const platforms = { 'linux-x64': ['rpm', 'tar.gz'], 'win-x64': ['zip'], 'mac-x64': ['dmg', 'zip'], 'mac-arm64': ['dmg', 'zip'] }
+export const platforms = { 'linux-x64': ['rpm', 'deb', 'AppImage', 'tar.gz'], 'win-x64': ['zip'], 'mac-x64': ['dmg', 'zip'], 'mac-arm64': ['dmg', 'zip'] }
 export async function digest(filename) {
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(filename)) hash.update(chunk)
